@@ -33,6 +33,9 @@ interface InsightData {
   applications?: string
   methodology?: string
   status?: string
+  summary?: string
+  key_points?: string[]
+  recommendations?: string[]
 }
 
 interface AudioSegment {
@@ -325,8 +328,11 @@ export default function ReaderPage() {
   }
 
   // Categorize search results for different tabs
-  const relatedResults = searchResults.filter(r => r.similarity_score > 0.7)
-  const overlappingResults = searchResults.filter(r => r.similarity_score > 0.5 && r.similarity_score <= 0.7)
+  // Use top-K strategy instead of absolute thresholds: MiniLM scores often sit in the 0.15-0.35 range,
+  // so a hard threshold like 0.7 hides useful matches. Show the top results by similarity.
+  const sortedResults = [...searchResults].sort((a, b) => b.similarity_score - a.similarity_score)
+  const relatedResults = sortedResults.slice(0, Math.min(8, sortedResults.length))
+  const overlappingResults = sortedResults.slice(8, Math.min(16, sortedResults.length))
   const contradictingResults = searchResults.filter(r => r.snippet.toLowerCase().includes('however') || r.snippet.toLowerCase().includes('but') || r.snippet.toLowerCase().includes('contrary'))
   const exampleResults = searchResults.filter(r => r.snippet.toLowerCase().includes('example') || r.snippet.toLowerCase().includes('case study') || r.snippet.toLowerCase().includes('instance'))
 
@@ -385,7 +391,6 @@ export default function ReaderPage() {
               onTextSelection={handleTextSelection} 
               selectedText={selectedText}
               pdfUrl={currentPdf}
-              enableLensMode={true}
               onDocumentLoad={(docInfo) => {
                 console.log('Document loaded:', docInfo)
               }}

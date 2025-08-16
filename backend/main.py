@@ -30,6 +30,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import uvicorn
+try:
+    import fitz
+except Exception:
+    fitz = None
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -192,10 +196,57 @@ def init_database():
 
 def init_vector_search():
     """Initialize FAISS vector search and sentence transformer model."""
-    global model, faiss_index
-    
-    print("📝 Using text-based search (vector search disabled)")
-    return False
+    global model, faiss_index, VECTOR_AVAILABLE
+
+    # Try to import faiss and the sentence-transformers model
+    try:
+        import faiss
+    except Exception as e:
+        print(f"⚠️ faiss not available: {e}")
+        VECTOR_AVAILABLE = False
+        return False
+
+    # Load or create embedding model (reuse existing lazy loader)
+    emb_model = load_minilm_model()
+    if not emb_model:
+        print("⚠️ Embedding model not available; cannot enable FAISS vector search")
+        VECTOR_AVAILABLE = False
+        return False
+
+    # Set global model to the sentence-transformers instance used for embeddings
+    model = emb_model
+
+    # Prepare index storage path
+    faiss_store = Path(os.getenv('FAISS_INDEX_PATH', './data/embeddings'))
+    faiss_store.mkdir(parents=True, exist_ok=True)
+    index_file = faiss_store / 'faiss.index'
+
+    # Known MiniLM dimension
+    EMBEDDING_DIM = 384
+
+    try:
+        # Try to load existing index
+        if index_file.exists():
+            try:
+                faiss_index = faiss.read_index(str(index_file))
+                print(f"✅ Loaded FAISS index from {index_file}")
+            except Exception as e:
+                print(f"⚠️ Failed to read existing FAISS index: {e}. Creating new index.")
+                # create fresh
+                quant = faiss.IndexFlatIP(EMBEDDING_DIM)
+                faiss_index = faiss.IndexIDMap(quant)
+        else:
+            quant = faiss.IndexFlatIP(EMBEDDING_DIM)
+            faiss_index = faiss.IndexIDMap(quant)
+            print(f"✅ Created new FAISS index (dim={EMBEDDING_DIM})")
+
+        VECTOR_AVAILABLE = True
+        return True
+    except Exception as e:
+        print(f"❌ Failed to initialize FAISS index: {e}")
+        VECTOR_AVAILABLE = False
+        faiss_index = None
+        return False
 
 def init_llm():
     """Initialize Gemini LLM for insights generation."""
@@ -379,6 +430,7 @@ async def process_document(file_path: Path, document_id: int):
         
         # Store sections
         embeddings_to_add = []
+        section_id_list = []
         for section in outline:
             # The extractor returns 0-based page indices (page numbers starting at 0).
             # Convert to 1-based page numbers for UI/Viewer compatibility.
@@ -387,6 +439,22 @@ async def process_document(file_path: Path, document_id: int):
                 page_number = int(raw_page) + 1 if int(raw_page) >= 0 else 0
             except Exception:
                 page_number = 0
+            # Choose section text: prefer explicit text, but if too short, extract full page text
+            sec_text = section.get('text', '') or ''
+            if len(sec_text.strip()) < 40:
+                # Try to extract page text using PyMuPDF if available
+                try:
+                    if fitz is not None:
+                        doc = fitz.open(str(file_path))
+                        # raw_page is 0-based; ensure within range
+                        if 0 <= int(raw_page) < len(doc):
+                            page_text = doc[int(raw_page)].get_text()
+                            # Use the page text if it's longer and meaningful
+                            if page_text and len(page_text.strip()) > len(sec_text):
+                                sec_text = page_text.strip()
+                        doc.close()
+                except Exception as e:
+                    print('⚠️ Failed to extract page text for fuller section content:', e)
 
             cursor.execute("""
                 INSERT INTO sections (document_id, section_title, section_text, page_number, level)
@@ -394,29 +462,46 @@ async def process_document(file_path: Path, document_id: int):
             """, (
                 document_id,
                 section.get('text', ''),
-                section.get('text', ''),  # For now, use title as text
+                sec_text,
                 page_number,
                 section.get('level', 'H3')
             ))
-            
+            section_id = cursor.lastrowid
+            section_id_list.append(section_id)
+
             # Prepare for vector embedding
-            if model and section.get('text'):
-                embeddings_to_add.append(section.get('text', ''))
+            if model and sec_text and len(sec_text.strip()) > 20:
+                embeddings_to_add.append((section_id, sec_text))
         
         conn.commit()
         conn.close()
         
         # Add to FAISS index if vector search is enabled
         if VECTOR_AVAILABLE and model and faiss_index and embeddings_to_add:
-            print(f"🔍 Computing embeddings for {len(embeddings_to_add)} sections...")
-            # embeddings = model.encode(embeddings_to_add, show_progress_bar=False)
-            # 
-            # # Normalize for cosine similarity
-            # faiss.normalize_L2(embeddings)
-            # 
-            # # Add to index
-            # faiss_index.add(embeddings.astype('float32'))
-            print(f"✅ Would add {len(embeddings_to_add)} embeddings to FAISS index (disabled)")
+            try:
+                import faiss
+                print(f"🔍 Computing embeddings for {len(embeddings_to_add)} sections...")
+                ids = [sid for sid, txt in embeddings_to_add]
+                texts = [txt for sid, txt in embeddings_to_add]
+                # Encode to numpy
+                embeddings = model.encode(texts, convert_to_numpy=True)
+                # Normalize and add
+                faiss.normalize_L2(embeddings)
+                ids_arr = np.array(ids, dtype='int64')
+                faiss_index.add_with_ids(embeddings.astype('float32'), ids_arr)
+
+                # Persist index to disk
+                try:
+                    faiss_store = Path(os.getenv('FAISS_INDEX_PATH', './data/embeddings'))
+                    index_file = faiss_store / 'faiss.index'
+                    faiss.write_index(faiss_index, str(index_file))
+                    print(f"✅ Persisted FAISS index to {index_file}")
+                except Exception as e:
+                    print('⚠️ Could not persist FAISS index:', e)
+
+                print(f"✅ Added {len(embeddings_to_add)} embeddings to FAISS index")
+            except Exception as e:
+                print('❌ Error while indexing embeddings to FAISS:', e)
         else:
             print("📝 Vector indexing skipped - using text search")
         
@@ -507,8 +592,15 @@ async def search_related(request: SearchRequest):
     try:
         start_time = datetime.now()
         
-        if model and faiss_index and VECTOR_AVAILABLE:
-            # Use vector search if available
+        # If FAISS index exists and contains vectors, prefer vector search.
+        # If FAISS index is present but empty, fall back to text search to avoid empty results.
+        try:
+            faiss_ntotal = faiss_index.ntotal if faiss_index is not None else 0
+        except Exception:
+            faiss_ntotal = 0
+
+        if model and faiss_index and VECTOR_AVAILABLE and faiss_ntotal > 0:
+            # Use vector search if available and populated
             results = await vector_search(request, cursor, search_id, start_time)
         else:
             # Use fallback text search
@@ -526,9 +618,77 @@ async def search_related(request: SearchRequest):
 
 async def vector_search(request: SearchRequest, cursor, search_id: int, start_time):
     """Vector-based semantic search using FAISS"""
-    # This function is disabled - falling back to text search
-    print("⚠️ Vector search called but disabled - using text search fallback")
-    return await fallback_text_search(request, cursor, search_id, start_time)
+    try:
+        import faiss
+    except Exception:
+        print("⚠️ FAISS not available at runtime, falling back to text search")
+        return await fallback_text_search(request, cursor, search_id, start_time)
+
+    if not (model and faiss_index and VECTOR_AVAILABLE):
+        print("⚠️ Vector search dependencies missing, falling back to text search")
+        return await fallback_text_search(request, cursor, search_id, start_time)
+
+    try:
+        # Encode query
+        query_vec = model.encode([request.selected_text], convert_to_numpy=True)
+        # Normalize for cosine similarity via inner product
+        faiss.normalize_L2(query_vec)
+
+        k = min(max(request.max_results or 8, 1), 50)
+        distances, ids = faiss_index.search(query_vec.astype('float32'), k)
+
+        results = []
+        found_ids = [int(i) for i in ids[0] if i != -1]
+        if not found_ids:
+            return []
+
+        # Fetch matching sections from DB by id
+        placeholders = ','.join('?' for _ in found_ids)
+        cursor.execute(f"SELECT id, section_title, section_text, page_number, document_id FROM sections WHERE id IN ({placeholders})", tuple(found_ids))
+        rows = cursor.fetchall()
+
+        # Map id->row
+        row_map = {r[0]: r for r in rows}
+
+        for idx, raw_id in enumerate(ids[0]):
+            if raw_id == -1:
+                continue
+            sid = int(raw_id)
+            row = row_map.get(sid)
+            if not row:
+                continue
+            # Compute similarity score from distances (inner product on normalized vectors)
+            sim = float(distances[0][idx])
+
+            # Get document filename
+            cursor.execute("SELECT filename FROM documents WHERE id = ?", (row[4],))
+            doc_row = cursor.fetchone()
+            doc_name = doc_row[0] if doc_row else 'Unknown'
+
+            full_text = row[2] or row[1] or ''
+            snippet = full_text[:300] + '...' if len(full_text) > 300 else full_text
+
+            results.append(SearchResult(
+                document_name=doc_name,
+                section_title=row[1] or 'Untitled',
+                snippet=snippet,
+                page_number=row[3] or 1,
+                similarity_score=sim,
+                highlight_text=request.selected_text
+            ))
+
+        # Sort and return top-k
+        results.sort(key=lambda x: x.similarity_score, reverse=True)
+        final = results[: (request.max_results or 8) ]
+
+        search_time = (datetime.now() - start_time).total_seconds()
+        cursor.execute("UPDATE search_history SET results_count = ?, search_time = CURRENT_TIMESTAMP WHERE id = ?", (len(final), search_id))
+        print(f"🔍 FAISS vector search completed in {search_time:.3f}s -> {len(final)} results")
+        return final
+
+    except Exception as e:
+        print(f"❌ Vector search failed: {e}")
+        return await fallback_text_search(request, cursor, search_id, start_time)
 
 async def fallback_text_search(request: SearchRequest, cursor, search_id: int, start_time):
     """Enhanced text search using MiniLM semantic embeddings if available, otherwise keyword matching"""
@@ -947,88 +1107,87 @@ async def generate_audio(request: AudioRequest):
         audio_files = []
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        lines = script.split('\n')
-        segment_counter = 0
-        
-        for i, line in enumerate(lines):
-            if line.strip():
-                speaker = None
-                text = ""
-                
-                if line.startswith('Speaker A:'):
-                    speaker = 'A'
-                    text = line.replace('Speaker A:', '').strip()
-                elif line.startswith('Speaker B:'):
-                    speaker = 'B'
-                    text = line.replace('Speaker B:', '').strip()
-                elif line.startswith('Host A:'):
-                    speaker = 'A'
-                    text = line.replace('Host A:', '').strip()
-                elif line.startswith('Expert B:'):
-                    speaker = 'B'
-                    text = line.replace('Expert B:', '').strip()
-                else:
-                    continue
-                
-                if text and len(text) > 10:  # Only process substantial text
-                    segment_counter += 1
-                    filename = f"podcast_{timestamp}_speaker{speaker}_{segment_counter:03d}.wav"
-                    audio_path = AUDIO_DIR / filename
-                    
-                    # Generate TTS with Azure Speech SDK (if configured)
-                    speech_key = os.getenv("AZURE_SPEECH_KEY")
-                    speech_region = os.getenv("AZURE_SPEECH_REGION")
-                    
-                    if speech_key and speech_region:
-                        try:
-                            speech_config = speechsdk.SpeechConfig(
-                                subscription=speech_key, 
-                                region=speech_region
-                            )
-                            
-                            # Use more natural, engaging voices
-                            if speaker == 'A':
-                                speech_config.speech_synthesis_voice_name = "en-US-JennyNeural"  # Friendly, curious tone
-                            else:
-                                speech_config.speech_synthesis_voice_name = "en-US-RyanNeural"   # Knowledgeable, expert tone
-                            
-                            # Enhanced speech settings for podcast quality
-                            speech_config.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3)
-                            
-                            audio_config = speechsdk.audio.AudioOutputConfig(filename=str(audio_path))
-                            synthesizer = speechsdk.SpeechSynthesizer(
-                                speech_config=speech_config, 
-                                audio_config=audio_config
-                            )
-                            
-                            # Add SSML for more natural speech
-                            ssml_text = f"""
-                            <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
-                                <voice name="{speech_config.speech_synthesis_voice_name}">
-                                    <prosody rate="0.9" pitch="+2%" volume="85">
-                                        {text}
-                                    </prosody>
-                                </voice>
-                            </speak>
-                            """
-                            
-                            result = synthesizer.speak_ssml_async(ssml_text).get()
-                            
-                            if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-                                audio_files.append({
-                                    "speaker": speaker,
-                                    "filename": filename,
-                                    "text": text,
-                                    "duration_estimate": len(text) / 12,  # Rough estimate: 12 chars per second
-                                    "segment_order": segment_counter
-                                })
-                            else:
-                                print(f"Speech synthesis failed for segment {segment_counter}: {result.reason}")
-                                
-                        except Exception as e:
-                            print(f"TTS error for segment {segment_counter}: {e}")
+        # Combine the script into a single SSML payload alternating two distinct voices
+        # to produce a 2-3 minute podcast. This avoids generating many small files and
+        # keeps Azure usage low for free accounts.
+        speech_key = os.getenv("AZURE_SPEECH_KEY")
+        speech_region = os.getenv("AZURE_SPEECH_REGION")
+
+        if not (speech_key and speech_region):
+            print("Azure Speech credentials not found. Audio files not generated.")
+        else:
+            try:
+                # Build alternating SSML using two voices
+                # Normalize script into speaker segments
+                segments = []
+                for raw in script.split('\n'):
+                    if not raw.strip():
+                        continue
+                    if raw.startswith('Speaker A:') or raw.startswith('Host A:'):
+                        segments.append(('A', raw.split(':', 1)[1].strip()))
+                    elif raw.startswith('Speaker B:') or raw.startswith('Expert B:'):
+                        segments.append(('B', raw.split(':', 1)[1].strip()))
                     else:
-                        print("Azure Speech credentials not found. Audio files not generated.")
+                        # If not labeled, append to last speaker if present, else A
+                        if segments:
+                            segments[-1] = (segments[-1][0], segments[-1][1] + ' ' + raw.strip())
+                        else:
+                            segments.append(('A', raw.strip()))
+
+                # Merge successive same-speaker segments to reduce switches
+                merged = []
+                for s, t in segments:
+                    if merged and merged[-1][0] == s:
+                        merged[-1] = (s, merged[-1][1] + ' ' + t)
+                    else:
+                        merged.append((s, t))
+
+                # Estimate total duration and truncate if needed (target 150s default)
+                full_text = ' '.join([t for _, t in merged])
+                est_secs = max(1, len(full_text) / 12)
+                target_secs = 150  # ~2.5 minutes
+                if est_secs > target_secs:
+                    # truncate merged segments to fit target length
+                    allowed_chars = int(target_secs * 12)
+                    truncated = full_text[:allowed_chars]
+                    # Rebuild segments from truncated text as a single block
+                    merged = [('A', truncated)]
+
+                # Build SSML with alternating voices
+                ssml_parts = ['<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">']
+                for speaker, text in merged:
+                    voice = 'en-US-JennyNeural' if speaker == 'A' else 'en-US-RyanNeural'
+                    # Escape any problematic characters
+                    safe_text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    ssml_parts.append(f'<voice name="{voice}"><prosody rate="0.95" pitch="+1%">{safe_text}</prosody></voice>')
+                ssml_parts.append('</speak>')
+                ssml_text = ''.join(ssml_parts)
+
+                # Prepare single output file
+                filename = f"podcast_{timestamp}.wav"
+                audio_path = AUDIO_DIR / filename
+
+                speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
+                speech_config.speech_synthesis_voice_name = 'en-US-JennyNeural'
+                # Use WAV output for browser-friendly playback
+                audio_config = speechsdk.audio.AudioOutputConfig(filename=str(audio_path))
+                synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+
+                result = synthesizer.speak_ssml_async(ssml_text).get()
+                if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                    duration_est = max(1, int(len(' '.join([t for _, t in merged])) / 12))
+                    audio_files.append({
+                        'speaker': 'A+B',
+                        'filename': filename,
+                        'text': full_text[:1000],
+                        'duration_estimate': duration_est,
+                        'segment_order': 1
+                    })
+                else:
+                    print('Speech synthesis failed:', result.reason)
+
+            except Exception as e:
+                print('TTS error while generating combined podcast:', e)
         
         # Calculate total estimated duration
         total_duration = sum(file.get("duration_estimate", 0) for file in audio_files)
