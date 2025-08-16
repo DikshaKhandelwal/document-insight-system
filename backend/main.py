@@ -47,22 +47,54 @@ except ImportError as e:
     print(f"Error importing PDF extractors: {e}")
     sys.exit(1)
 
-# Try to import optional dependencies
+# Try to import optional dependencies - Use MiniLM without FAISS
+MINILM_AVAILABLE = False
+SENTENCE_TRANSFORMER_AVAILABLE = False
+sentence_model = None
+
+# Import cosine similarity regardless
+try:
+    from sklearn.metrics.pairwise import cosine_similarity
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("⚠️ sklearn not available for cosine similarity")
+
+try:
+    from sentence_transformers import SentenceTransformer
+    print("📦 sentence_transformers imported, will load model on first use")
+    # Lazy loading - don't load model immediately to start server faster
+    SENTENCE_TRANSFORMER_AVAILABLE = True
+except Exception as e:
+    MINILM_AVAILABLE = False
+    SENTENCE_TRANSFORMER_AVAILABLE = False
+    print(f"⚠️ sentence_transformers not available: {e}")
+    print("📝 Using enhanced text-based search")
+
+# Use enhanced text similarity 
+from difflib import SequenceMatcher
+import re
+
+# Disable FAISS for now - using MiniLM with cosine similarity instead
 VECTOR_AVAILABLE = False
 model = None
 faiss_index = None
-print("📝 Using text-based search (FAISS disabled for compatibility)")
+print("📝 Using MiniLM-based semantic search (FAISS disabled for compatibility)")
 
-# Comment out problematic imports
-# try:
-#     import faiss
-#     from sentence_transformers import SentenceTransformer
-#     VECTOR_AVAILABLE = True
-# except ImportError:
-#     VECTOR_AVAILABLE = False
-#     print("⚠️ FAISS or sentence-transformers not available. Using fallback text search.")
-#     faiss = None
-#     SentenceTransformer = None
+# Function to load MiniLM model lazily
+def load_minilm_model():
+    """Load MiniLM model on first use to speed up server startup"""
+    global sentence_model, MINILM_AVAILABLE
+    if sentence_model is None and SENTENCE_TRANSFORMER_AVAILABLE:
+        try:
+            print("⏳ Loading MiniLM model (first time may take a few moments)...")
+            sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
+            MINILM_AVAILABLE = True
+            print("✅ MiniLM model loaded successfully for semantic search")
+        except Exception as e:
+            print(f"❌ Failed to load MiniLM model: {e}")
+            MINILM_AVAILABLE = False
+    return sentence_model
 
 try:
     import google.generativeai as genai
@@ -499,8 +531,8 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
     return await fallback_text_search(request, cursor, search_id, start_time)
 
 async def fallback_text_search(request: SearchRequest, cursor, search_id: int, start_time):
-    """Fallback text-based search using keyword matching and text similarity"""
-    print(f"🔍 Using fallback text search for: '{request.selected_text[:50]}...'")
+    """Enhanced text search using MiniLM semantic embeddings if available, otherwise keyword matching"""
+    print(f"🔍 Using {'MiniLM semantic' if MINILM_AVAILABLE else 'keyword'} search for: '{request.selected_text[:50]}...'")
     
     # Get all sections from database
     cursor.execute("""
@@ -513,9 +545,93 @@ async def fallback_text_search(request: SearchRequest, cursor, search_id: int, s
     
     all_sections = cursor.fetchall()
     
-    # Simple text-based similarity scoring
-    query_words = set(request.selected_text.lower().split())
+    if SENTENCE_TRANSFORMER_AVAILABLE:
+        # Try to use MiniLM for semantic similarity (will load on demand)
+        results = await minilm_semantic_search(request, all_sections)
+    else:
+        # Fallback to basic keyword matching
+        results = await basic_keyword_search(request, all_sections)
+    
+    # Sort by similarity and limit results
+    results.sort(key=lambda x: x.similarity_score, reverse=True)
+    final_results = results[:request.max_results]
+    
+    # Calculate search performance metrics
+    search_time = (datetime.now() - start_time).total_seconds()
+    
+    # Update search history
+    cursor.execute("""
+        UPDATE search_history 
+        SET results_count = ?, search_time = CURRENT_TIMESTAMP 
+        WHERE id = ?
+    """, (len(final_results), search_id))
+    
+    print(f"🔍 Search completed in {search_time:.3f}s: '{request.selected_text[:50]}...' -> {len(final_results)} results")
+    
+    return final_results
+
+async def minilm_semantic_search(request: SearchRequest, all_sections):
+    """Semantic search using MiniLM embeddings and cosine similarity"""
     results = []
+    
+    # Load model lazily on first use
+    model = load_minilm_model()
+    if not model:
+        print("⚠️ MiniLM model not available, falling back to keyword search")
+        return await basic_keyword_search(request, all_sections)
+    
+    try:
+        # Generate embedding for the query text
+        query_embedding = model.encode([request.selected_text])
+        
+        # Process sections in batches for efficiency
+        section_texts = []
+        valid_sections = []
+        
+        for section in all_sections:
+            section_text = section[2] or section[1] or ""
+            if len(section_text.strip()) > 10:  # Only process sections with meaningful content
+                section_texts.append(section_text)
+                valid_sections.append(section)
+        
+        if not section_texts:
+            return results
+        
+        # Generate embeddings for all section texts
+        section_embeddings = model.encode(section_texts)
+        
+        # Calculate cosine similarities
+        similarities = cosine_similarity(query_embedding, section_embeddings)[0]
+        
+        # Create results with similarity scores
+        for i, (section, similarity) in enumerate(zip(valid_sections, similarities)):
+            # Set a reasonable threshold for semantic similarity
+            if similarity > 0.15:  # MiniLM threshold
+                full_text = section[2] or section[1]
+                snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
+                
+                results.append(SearchResult(
+                    document_name=section[4],
+                    section_title=section[1] or "Untitled Section", 
+                    snippet=snippet,
+                    page_number=section[3] or 1,
+                    similarity_score=float(similarity),
+                    highlight_text=request.selected_text
+                ))
+        
+        print(f"✅ MiniLM semantic search found {len(results)} relevant sections")
+        
+    except Exception as e:
+        print(f"❌ MiniLM search failed: {e}")
+        # Fallback to basic keyword search
+        results = await basic_keyword_search(request, all_sections)
+    
+    return results
+
+async def basic_keyword_search(request: SearchRequest, all_sections):
+    """Basic keyword-based search as fallback"""
+    results = []
+    query_words = set(request.selected_text.lower().split())
     
     for section in all_sections:
         section_text = (section[2] or section[1] or "").lower()
@@ -539,7 +655,7 @@ async def fallback_text_search(request: SearchRequest, cursor, search_id: int, s
                 similarity += 0.2
         
         # Only include results with reasonable similarity
-        if similarity > 0.1:  # Lower threshold for text search
+        if similarity > 0.1:  # Lower threshold for basic text search
             full_text = section[2] or section[1]
             snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
             
@@ -552,21 +668,8 @@ async def fallback_text_search(request: SearchRequest, cursor, search_id: int, s
                 highlight_text=request.selected_text
             ))
     
-    # Sort by similarity and limit results
-    results.sort(key=lambda x: x.similarity_score, reverse=True)
-    final_results = results[:request.max_results]
-    
-    # Calculate search performance metrics
-    search_time = (datetime.now() - start_time).total_seconds()
-    
-    # Update search history
-    cursor.execute("""
-        UPDATE search_history 
-        SET results_count = ?, search_time = CURRENT_TIMESTAMP 
-        WHERE id = ?
-    """, (len(final_results), search_id))
-    
-    print(f"🔍 Text search completed in {search_time:.3f}s: '{request.selected_text[:50]}...' -> {len(final_results)} results")
+    print(f"📝 Basic keyword search found {len(results)} relevant sections")
+    return results
     
     return final_results
 
