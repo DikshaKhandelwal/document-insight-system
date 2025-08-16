@@ -365,9 +365,9 @@ export default function ReaderPage() {
   const exampleResults = searchResults.filter(r => r.snippet.toLowerCase().includes('example') || r.snippet.toLowerCase().includes('case study') || r.snippet.toLowerCase().includes('instance'))
 
   return (
-    <div className="min-h-screen flex bg-gradient-to-br from-slate-50 to-white">
+    <div className="min-h-screen flex flex-col lg:flex-row bg-gradient-to-br from-slate-50 to-white">
       {/* Left Panel - Adobe PDF Viewer */}
-      <div className="flex-1 flex flex-col border-r border-slate-200">
+      <div className="flex-1 flex flex-col border-r border-slate-200 min-h-[50vh] lg:min-h-screen">
         {/* Header */}
         <div className="border-b border-slate-200 p-4 bg-white">
           <div className="flex items-center justify-between">
@@ -436,7 +436,7 @@ export default function ReaderPage() {
       </div>
 
       {/* Right Panel - Analysis Tabs */}
-      <div className="w-96 flex flex-col bg-white border-l border-slate-200">
+      <div className="w-full lg:w-96 lg:max-w-md lg:min-w-[320px] flex flex-col bg-white border-l border-slate-200">
         {/* Top Controls */}
         <div className="border-b border-slate-200 p-4">
           <div className="flex items-center justify-between mb-4">
@@ -569,26 +569,26 @@ export default function ReaderPage() {
                           className="cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-green-500 hover:border-l-green-600"
                           onClick={() => handleJumpToHighlight(result)}
                         >
-                          <CardContent className="p-4">
-                            <div className="flex items-center justify-between mb-2">
-                              <Badge variant="outline" className="text-xs">
-                                {result.document_name}
-                              </Badge>
-                              <div className="flex items-center gap-2">
-                                <Badge variant="secondary" className="text-xs">
-                                  {(result.similarity_score * 100).toFixed(0)}% match
+                          <CardContent className="p-3">
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <Badge variant="outline" className="text-xs truncate max-w-[120px]">
+                                  {result.document_name}
                                 </Badge>
-                                <div className="flex items-center gap-1">
-                                  <ExternalLink className="w-3 h-3 text-green-600" />
-                                  <span className="text-xs text-green-600">Open in new tab</span>
-                                </div>
+                                <Badge variant="secondary" className="text-xs">
+                                  {(result.similarity_score * 100).toFixed(0)}%
+                                </Badge>
                               </div>
-                            </div>
-                            <h4 className="font-medium text-slate-900 mb-2 text-sm">{result.section_title}</h4>
-                            <p className="text-sm text-slate-600 mb-2">{result.snippet}</p>
-                            <div className="flex items-center gap-2 text-xs text-slate-500">
-                              <FileText className="w-3 h-3" />
-                              Page {result.page_number}
+                              <div className="flex items-center gap-1 justify-end text-xs text-green-600">
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Open in new tab</span>
+                              </div>
+                              <h4 className="font-medium text-slate-900 text-sm leading-tight line-clamp-2">{result.section_title}</h4>
+                              <p className="text-xs text-slate-600 line-clamp-3">{result.snippet}</p>
+                              <div className="flex items-center gap-2 text-xs text-slate-500">
+                                <FileText className="w-3 h-3" />
+                                Page {result.page_number}
+                              </div>
                             </div>
                           </CardContent>
                         </Card>
@@ -626,26 +626,26 @@ export default function ReaderPage() {
                           className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-blue-500"
                           onClick={() => handleJumpToHighlight(result)}
                         >
-                          <CardContent className="p-4">
-                            <div className="flex items-center justify-between mb-2">
-                              <Badge variant="outline" className="text-xs">
-                                {result.document_name}
-                              </Badge>
-                              <div className="flex items-center gap-2">
-                                <Badge className="text-xs bg-blue-100 text-blue-700">
-                                  {(result.similarity_score * 100).toFixed(0)}% overlap
+                          <CardContent className="p-3">
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <Badge variant="outline" className="text-xs truncate max-w-[120px]">
+                                  {result.document_name}
                                 </Badge>
-                                <div className="flex items-center gap-1">
-                                  <ExternalLink className="w-3 h-3 text-blue-600" />
-                                  <span className="text-xs text-blue-600">Open in new tab</span>
-                                </div>
+                                <Badge className="text-xs bg-blue-100 text-blue-700">
+                                  {(result.similarity_score * 100).toFixed(0)}%
+                                </Badge>
                               </div>
-                            </div>
-                            <h4 className="font-medium text-slate-900 mb-2 text-sm">{result.section_title}</h4>
-                            <p className="text-sm text-slate-600 mb-2">{result.snippet}</p>
-                            <div className="flex items-center gap-2 text-xs text-slate-500">
-                              <FileText className="w-3 h-3" />
-                              Page {result.page_number}
+                              <div className="flex items-center gap-1 justify-end text-xs text-blue-600">
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Open in new tab</span>
+                              </div>
+                              <h4 className="font-medium text-slate-900 text-sm leading-tight line-clamp-2">{result.section_title}</h4>
+                              <p className="text-xs text-slate-600 line-clamp-3">{result.snippet}</p>
+                              <div className="flex items-center gap-2 text-xs text-slate-500">
+                                <FileText className="w-3 h-3" />
+                                Page {result.page_number}
+                              </div>
                             </div>
                           </CardContent>
                         </Card>
@@ -677,26 +677,26 @@ export default function ReaderPage() {
                           className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-red-500"
                           onClick={() => handleJumpToHighlight(result)}
                         >
-                          <CardContent className="p-4">
-                            <div className="flex items-center justify-between mb-2">
-                              <Badge variant="outline" className="text-xs">
-                                {result.document_name}
-                              </Badge>
-                              <div className="flex items-center gap-2">
+                          <CardContent className="p-3">
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <Badge variant="outline" className="text-xs truncate max-w-[120px]">
+                                  {result.document_name}
+                                </Badge>
                                 <Badge className="text-xs bg-red-100 text-red-700">
                                   Contradictory
                                 </Badge>
-                                <div className="flex items-center gap-1">
-                                  <ExternalLink className="w-3 h-3 text-red-600" />
-                                  <span className="text-xs text-red-600">Open in new tab</span>
-                                </div>
                               </div>
-                            </div>
-                            <h4 className="font-medium text-slate-900 mb-2 text-sm">{result.section_title}</h4>
-                            <p className="text-sm text-slate-600 mb-2">{result.snippet}</p>
-                            <div className="flex items-center gap-2 text-xs text-slate-500">
-                              <FileText className="w-3 h-3" />
-                              Page {result.page_number}
+                              <div className="flex items-center gap-1 justify-end text-xs text-red-600">
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Open in new tab</span>
+                              </div>
+                              <h4 className="font-medium text-slate-900 text-sm leading-tight line-clamp-2">{result.section_title}</h4>
+                              <p className="text-xs text-slate-600 line-clamp-3">{result.snippet}</p>
+                              <div className="flex items-center gap-2 text-xs text-slate-500">
+                                <FileText className="w-3 h-3" />
+                                Page {result.page_number}
+                              </div>
                             </div>
                           </CardContent>
                         </Card>
@@ -728,26 +728,26 @@ export default function ReaderPage() {
                           className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-purple-500"
                           onClick={() => handleJumpToHighlight(result)}
                         >
-                          <CardContent className="p-4">
-                            <div className="flex items-center justify-between mb-2">
-                              <Badge variant="outline" className="text-xs">
-                                {result.document_name}
-                              </Badge>
-                              <div className="flex items-center gap-2">
+                          <CardContent className="p-3">
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <Badge variant="outline" className="text-xs truncate max-w-[120px]">
+                                  {result.document_name}
+                                </Badge>
                                 <Badge className="text-xs bg-purple-100 text-purple-700">
                                   Example
                                 </Badge>
-                                <div className="flex items-center gap-1">
-                                  <ExternalLink className="w-3 h-3 text-purple-600" />
-                                  <span className="text-xs text-purple-600">Open in new tab</span>
-                                </div>
                               </div>
-                            </div>
-                            <h4 className="font-medium text-slate-900 mb-2 text-sm">{result.section_title}</h4>
-                            <p className="text-sm text-slate-600 mb-2">{result.snippet}</p>
-                            <div className="flex items-center gap-2 text-xs text-slate-500">
-                              <FileText className="w-3 h-3" />
-                              Page {result.page_number}
+                              <div className="flex items-center gap-1 justify-end text-xs text-purple-600">
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Open in new tab</span>
+                              </div>
+                              <h4 className="font-medium text-slate-900 text-sm leading-tight line-clamp-2">{result.section_title}</h4>
+                              <p className="text-xs text-slate-600 line-clamp-3">{result.snippet}</p>
+                              <div className="flex items-center gap-2 text-xs text-slate-500">
+                                <FileText className="w-3 h-3" />
+                                Page {result.page_number}
+                              </div>
                             </div>
                           </CardContent>
                         </Card>
