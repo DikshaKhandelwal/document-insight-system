@@ -8,7 +8,7 @@ import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Search, FileText, Brain, Volume2, ArrowLeft, Sparkles, Lightbulb, Target, Upload, Loader2, Play, Pause, Volume1, Download, AlertCircle, Eye } from "lucide-react"
+import { Search, FileText, Brain, Volume2, ArrowLeft, Sparkles, Lightbulb, Target, Upload, Loader2, Play, Pause, Volume1, Download, AlertCircle, Eye, ExternalLink } from "lucide-react"
 import Link from "next/link"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import PDFViewer from "@/components/pdf-viewer"
@@ -304,8 +304,19 @@ export default function ReaderPage() {
     }
   }
 
-  const handleJumpToHighlight = (result: SearchResult) => {
-    console.log('Jumping to highlight:', result.page_number, result.highlight_text)
+  const handleJumpToHighlight = async (result: SearchResult) => {
+    console.log('Opening in new tab:', result.page_number, result.highlight_text, 'from document:', result.document_name)
+    
+    // Create URL for the PDF with page parameter
+    const pdfUrl = `/api/files/${result.document_name}#page=${result.page_number}`
+    
+    // Open in new tab
+    window.open(pdfUrl, '_blank', 'noopener,noreferrer')
+    
+    console.log(`Opened "${result.section_title}" on page ${result.page_number} in new tab`)
+  }
+
+  const navigateToPageAndHighlight = (result: SearchResult) => {
     if (pdfViewerRef.current) {
       // Clear any previous selections first
       pdfViewerRef.current.clearSelection(result.page_number)
@@ -553,7 +564,11 @@ export default function ReaderPage() {
                         </Badge>
                       </div>
                       {relatedResults.map((result, index) => (
-                        <Card key={result.id} className="cursor-pointer hover:shadow-md transition-shadow">
+                        <Card 
+                          key={result.id} 
+                          className="cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-green-500 hover:border-l-green-600"
+                          onClick={() => handleJumpToHighlight(result)}
+                        >
                           <CardContent className="p-4">
                             <div className="flex items-center justify-between mb-2">
                               <Badge variant="outline" className="text-xs">
@@ -563,14 +578,10 @@ export default function ReaderPage() {
                                 <Badge variant="secondary" className="text-xs">
                                   {(result.similarity_score * 100).toFixed(0)}% match
                                 </Badge>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => handleJumpToHighlight(result)}
-                                  className="h-6 w-6 p-0"
-                                >
-                                  <Eye className="w-3 h-3" />
-                                </Button>
+                                <div className="flex items-center gap-1">
+                                  <ExternalLink className="w-3 h-3 text-green-600" />
+                                  <span className="text-xs text-green-600">Open in new tab</span>
+                                </div>
                               </div>
                             </div>
                             <h4 className="font-medium text-slate-900 mb-2 text-sm">{result.section_title}</h4>
@@ -610,7 +621,11 @@ export default function ReaderPage() {
                         </Badge>
                       </div>
                       {overlappingResults.map((result, index) => (
-                        <Card key={result.id} className="cursor-pointer hover:shadow-md transition-shadow">
+                        <Card 
+                          key={result.id} 
+                          className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-blue-500"
+                          onClick={() => handleJumpToHighlight(result)}
+                        >
                           <CardContent className="p-4">
                             <div className="flex items-center justify-between mb-2">
                               <Badge variant="outline" className="text-xs">
@@ -620,14 +635,10 @@ export default function ReaderPage() {
                                 <Badge className="text-xs bg-blue-100 text-blue-700">
                                   {(result.similarity_score * 100).toFixed(0)}% overlap
                                 </Badge>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => handleJumpToHighlight(result)}
-                                  className="h-6 w-6 p-0"
-                                >
-                                  <Eye className="w-3 h-3" />
-                                </Button>
+                                <div className="flex items-center gap-1">
+                                  <ExternalLink className="w-3 h-3 text-blue-600" />
+                                  <span className="text-xs text-blue-600">Open in new tab</span>
+                                </div>
                               </div>
                             </div>
                             <h4 className="font-medium text-slate-900 mb-2 text-sm">{result.section_title}</h4>
@@ -661,7 +672,11 @@ export default function ReaderPage() {
                         </Badge>
                       </div>
                       {contradictingResults.map((result, index) => (
-                        <Card key={result.id} className="cursor-pointer hover:shadow-md transition-shadow border-red-200">
+                        <Card 
+                          key={result.id} 
+                          className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-red-500"
+                          onClick={() => handleJumpToHighlight(result)}
+                        >
                           <CardContent className="p-4">
                             <div className="flex items-center justify-between mb-2">
                               <Badge variant="outline" className="text-xs">
@@ -671,14 +686,10 @@ export default function ReaderPage() {
                                 <Badge className="text-xs bg-red-100 text-red-700">
                                   Contradictory
                                 </Badge>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => handleJumpToHighlight(result)}
-                                  className="h-6 w-6 p-0"
-                                >
-                                  <Eye className="w-3 h-3" />
-                                </Button>
+                                <div className="flex items-center gap-1">
+                                  <ExternalLink className="w-3 h-3 text-red-600" />
+                                  <span className="text-xs text-red-600">Open in new tab</span>
+                                </div>
                               </div>
                             </div>
                             <h4 className="font-medium text-slate-900 mb-2 text-sm">{result.section_title}</h4>
@@ -712,7 +723,11 @@ export default function ReaderPage() {
                         </Badge>
                       </div>
                       {exampleResults.map((result, index) => (
-                        <Card key={result.id} className="cursor-pointer hover:shadow-md transition-shadow border-purple-200">
+                        <Card 
+                          key={result.id} 
+                          className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-purple-500"
+                          onClick={() => handleJumpToHighlight(result)}
+                        >
                           <CardContent className="p-4">
                             <div className="flex items-center justify-between mb-2">
                               <Badge variant="outline" className="text-xs">
@@ -722,14 +737,10 @@ export default function ReaderPage() {
                                 <Badge className="text-xs bg-purple-100 text-purple-700">
                                   Example
                                 </Badge>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => handleJumpToHighlight(result)}
-                                  className="h-6 w-6 p-0"
-                                >
-                                  <Eye className="w-3 h-3" />
-                                </Button>
+                                <div className="flex items-center gap-1">
+                                  <ExternalLink className="w-3 h-3 text-purple-600" />
+                                  <span className="text-xs text-purple-600">Open in new tab</span>
+                                </div>
                               </div>
                             </div>
                             <h4 className="font-medium text-slate-900 mb-2 text-sm">{result.section_title}</h4>
