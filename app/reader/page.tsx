@@ -42,6 +42,7 @@ interface AudioSegment {
   speaker: string
   filename: string
   text: string
+  duration_estimate?: number
 }
 
 // Enhanced PDF.js integration
@@ -276,7 +277,23 @@ export default function ReaderPage() {
       if (response.ok) {
         const result = await response.json()
         console.log('Podcast generated successfully')
-        setAudioSegments(result.audio_files || [])
+        const files = result.audio_files || []
+        setAudioSegments(files)
+
+        // Auto-load and attempt to play the generated single podcast file (if present)
+        if (files.length > 0 && audioRef.current) {
+          const url = `/api/audio/${files[0].filename}`
+          try {
+            audioRef.current.src = url
+            // Attempt to play; browsers may block autoplay without user gesture
+            const p = audioRef.current.play()
+            if (p && p.catch) p.catch((e) => console.warn('Autoplay prevented:', e))
+            setCurrentAudioIndex(0)
+            setIsPlaying(true)
+          } catch (e) {
+            console.warn('Could not auto-play audio:', e)
+          }
+        }
       } else {
         console.error('Podcast generation failed:', response.status)
       }
