@@ -113,17 +113,21 @@ export default function ReaderPage() {
   }
 
   const handleTextSelection = async (text: string) => {
-    console.log('Text selected:', text.substring(0, 100) + '...')
+    console.log('📝 Text selected for lens analysis:', text.substring(0, 100) + '...')
     
-    if (text.trim().length < 10) {
-      console.log('Text too short, minimum 10 characters required')
+    if (text.trim().length < 5) {
+      console.log('⚠️ Text too short for meaningful analysis (minimum 5 characters)')
       return
     }
 
+    // Immediately show user feedback
     setSelectedText(text)
     setIsSearching(true)
     setSearchResults([])
     setInsights({})
+    
+    // Add visual feedback to the user
+    console.log('🚀 Starting automatic analysis...')
 
     // Ensure text selection is enabled in PDF viewer
     if (pdfViewerRef.current) {
@@ -131,7 +135,7 @@ export default function ReaderPage() {
     }
 
     try {
-      console.log('Performing semantic search...')
+      console.log('🔍 Performing semantic search for lens selection...')
       // Step 1: Semantic search for related sections
       const searchResponse = await fetch('/api/search', {
         method: 'POST',
@@ -139,32 +143,57 @@ export default function ReaderPage() {
         body: JSON.stringify({
           selected_text: text,
           max_results: 15, // Increased for better categorization
-          context: "user_selection",
-          include_metadata: true // Request additional metadata for better categorization
+          context: "lens_selection", // Updated context
+          include_metadata: true, // Request additional metadata for better categorization
+          auto_trigger: true // Flag for auto-triggered analysis
         })
       })
 
       if (searchResponse.ok) {
         const results = await searchResponse.json()
-        console.log('Search results received:', results.length, 'matches')
+        console.log('✅ Search results received:', results.length, 'matches')
         setSearchResults(results)
         
-        // Switch to related tab to show results
+        // Switch to related tab to show results immediately
         setActiveTab("related")
         
-        // Auto-generate insights if we have good results
-        if (results.length >= 3) {
+        // Auto-generate insights immediately if we have results
+        if (results.length > 0) {
+          console.log('🧠 Auto-generating insights for lens selection...')
           setTimeout(() => {
             generateInsights()
-          }, 1000) // Small delay to let search results settle
+          }, 500) // Reduced delay for faster response
+        } else {
+          console.log('💡 No matches found, providing guidance')
+          setInsights({
+            summary: `No direct matches found for "${text.substring(0, 50)}..."`,
+            key_points: [
+              "Try selecting more specific terms",
+              "Look for technical terminology or key concepts", 
+              "Select complete phrases rather than partial words"
+            ],
+            recommendations: ["Select different text areas to find related content"]
+          })
         }
       } else {
-        console.error('Search failed:', searchResponse.status, searchResponse.statusText)
+        console.error('❌ Search failed:', searchResponse.status, searchResponse.statusText)
         const errorText = await searchResponse.text()
         console.error('Search error details:', errorText)
+        
+        // Provide helpful error feedback
+        setInsights({
+          summary: "Analysis temporarily unavailable",
+          key_points: ["Search service encountered an issue"],
+          recommendations: ["Try selecting text again", "Check if the document is fully loaded"]
+        })
       }
     } catch (error) {
-      console.error('Search error:', error)
+      console.error('❌ Analysis error:', error)
+      setInsights({
+        summary: "Failed to analyze selected text",
+        key_points: [`Error: ${error instanceof Error ? error.message : 'Unknown error'}`],
+        recommendations: ["Try selecting different text", "Refresh the page if issues persist"]
+      })
     } finally {
       setIsSearching(false)
     }
@@ -329,6 +358,21 @@ export default function ReaderPage() {
                   {documents.filter(d => d.processing_status === 'completed').length} documents ready
                 </span>
               </div>
+              
+              {/* Auto-Analysis Indicator */}
+              <div className="flex items-center gap-2 ml-4 px-3 py-1 bg-green-50 border border-green-200 rounded-lg">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                <span className="text-sm text-green-700 font-medium">Auto-Analysis Active</span>
+                <span className="text-xs text-green-600">Highlight any text to analyze</span>
+              </div>
+              
+              {/* Search Status Indicator */}
+              {isSearching && (
+                <div className="flex items-center gap-2 ml-2 px-3 py-1 bg-orange-50 border border-orange-200 rounded-lg">
+                  <div className="w-2 h-2 bg-orange-500 rounded-full animate-spin"></div>
+                  <span className="text-sm text-orange-700 font-medium">Analyzing...</span>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -341,6 +385,7 @@ export default function ReaderPage() {
               onTextSelection={handleTextSelection} 
               selectedText={selectedText}
               pdfUrl={currentPdf}
+              enableLensMode={true}
               onDocumentLoad={(docInfo) => {
                 console.log('Document loaded:', docInfo)
               }}

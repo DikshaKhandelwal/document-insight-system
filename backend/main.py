@@ -48,13 +48,21 @@ except ImportError as e:
     sys.exit(1)
 
 # Try to import optional dependencies
-try:
-    import faiss
-    from sentence_transformers import SentenceTransformer
-    VECTOR_AVAILABLE = True
-except ImportError:
-    VECTOR_AVAILABLE = False
-    print("⚠️ FAISS or sentence-transformers not available. Vector search disabled.")
+VECTOR_AVAILABLE = False
+model = None
+faiss_index = None
+print("📝 Using text-based search (FAISS disabled for compatibility)")
+
+# Comment out problematic imports
+# try:
+#     import faiss
+#     from sentence_transformers import SentenceTransformer
+#     VECTOR_AVAILABLE = True
+# except ImportError:
+#     VECTOR_AVAILABLE = False
+#     print("⚠️ FAISS or sentence-transformers not available. Using fallback text search.")
+#     faiss = None
+#     SentenceTransformer = None
 
 try:
     import google.generativeai as genai
@@ -154,21 +162,8 @@ def init_vector_search():
     """Initialize FAISS vector search and sentence transformer model."""
     global model, faiss_index
     
-    if not VECTOR_AVAILABLE:
-        return False
-    
-    try:
-        print("🧠 Loading sentence-transformers model...")
-        model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # Initialize empty FAISS index (384 dimensions for all-MiniLM-L6-v2)
-        faiss_index = faiss.IndexFlatIP(384)  # Inner product for cosine similarity
-        
-        print("✅ Vector search initialized successfully")
-        return True
-    except Exception as e:
-        print(f"❌ Failed to initialize vector search: {e}")
-        return False
+    print("📝 Using text-based search (vector search disabled)")
+    return False
 
 def init_llm():
     """Initialize Gemini LLM for insights generation."""
@@ -380,16 +375,18 @@ async def process_document(file_path: Path, document_id: int):
         conn.close()
         
         # Add to FAISS index if vector search is enabled
-        if model and faiss_index and embeddings_to_add:
+        if VECTOR_AVAILABLE and model and faiss_index and embeddings_to_add:
             print(f"🔍 Computing embeddings for {len(embeddings_to_add)} sections...")
-            embeddings = model.encode(embeddings_to_add, show_progress_bar=False)
-            
-            # Normalize for cosine similarity
-            faiss.normalize_L2(embeddings)
-            
-            # Add to index
-            faiss_index.add(embeddings.astype('float32'))
-            print(f"✅ Added {len(embeddings)} embeddings to FAISS index")
+            # embeddings = model.encode(embeddings_to_add, show_progress_bar=False)
+            # 
+            # # Normalize for cosine similarity
+            # faiss.normalize_L2(embeddings)
+            # 
+            # # Add to index
+            # faiss_index.add(embeddings.astype('float32'))
+            print(f"✅ Would add {len(embeddings_to_add)} embeddings to FAISS index (disabled)")
+        else:
+            print("📝 Vector indexing skipped - using text search")
         
         print(f"✅ Successfully processed {file_path}")
         
@@ -465,9 +462,6 @@ async def search_related(request: SearchRequest):
     High-speed semantic search for related sections based on selected text.
     Core feature for "connecting the dots" - optimized for speed and relevance.
     """
-    if not model or not faiss_index:
-        raise HTTPException(status_code=503, detail="Vector search not available")
-    
     # Store search in history with enhanced metadata
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -479,100 +473,16 @@ async def search_related(request: SearchRequest):
     conn.commit()
     
     try:
-        # Enhanced query preprocessing for better matching
-        query_text = request.selected_text
-        if request.context:
-            # Combine selected text with context for better semantic understanding
-            query_text = f"{request.selected_text} {request.context}"
-        
-        # Encode the selected text with enhanced preprocessing
         start_time = datetime.now()
-        query_embedding = model.encode([query_text])
-        faiss.normalize_L2(query_embedding)
         
-        # Search in FAISS index with expanded candidates for better recall
-        search_k = min(request.max_results * 3, faiss_index.ntotal)  # Get 3x more candidates
-        similarities, indices = faiss_index.search(
-            query_embedding.astype('float32'), 
-            search_k
-        )
+        if model and faiss_index and VECTOR_AVAILABLE:
+            # Use vector search if available
+            results = await vector_search(request, cursor, search_id, start_time)
+        else:
+            # Use fallback text search
+            results = await fallback_text_search(request, cursor, search_id, start_time)
         
-        # Get section details from database with enhanced query
-        cursor.execute("""
-            SELECT s.id, s.section_title, s.section_text, s.page_number, d.filename, d.title, d.total_sections
-            FROM sections s
-            JOIN documents d ON s.document_id = d.id
-            WHERE d.processing_status = 'completed'
-            ORDER BY s.id
-        """)
-        
-        all_sections = cursor.fetchall()
-        
-        # Build enhanced results with better filtering
-        results = []
-        seen_documents = set()
-        
-        for i, (similarity, idx) in enumerate(zip(similarities[0], indices[0])):
-            if idx < len(all_sections) and similarity > request.similarity_threshold:
-                section = all_sections[idx]
-                
-                # Diversify results - don't over-represent single documents
-                doc_name = section[4]
-                if len([r for r in results if r.document_name == doc_name]) >= 2:
-                    continue
-                
-                # Create enhanced snippet with context
-                full_text = section[2] or section[1]  # Use section_text or title
-                snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
-                
-                # Calculate relevance score (0-100)
-                relevance_score = min(100, int(similarity * 100))
-                
-                results.append(SearchResult(
-                    document_name=section[4],
-                    section_title=section[1] or "Untitled Section",
-                    snippet=snippet,
-                    page_number=section[3] or 1,
-                    similarity_score=float(similarity),
-                    highlight_text=request.selected_text
-                ))
-                
-                seen_documents.add(doc_name)
-        
-        # Sort by relevance and diversify results
-        results.sort(key=lambda x: x.similarity_score, reverse=True)
-        
-        # Ensure diversity in top results
-        final_results = []
-        doc_counts = {}
-        
-        for result in results:
-            doc_count = doc_counts.get(result.document_name, 0)
-            if doc_count < 2 and len(final_results) < request.max_results:  # Max 2 per document
-                final_results.append(result)
-                doc_counts[result.document_name] = doc_count + 1
-        
-        # If we don't have enough diverse results, fill with remaining high-scoring results
-        if len(final_results) < request.max_results:
-            for result in results:
-                if result not in final_results and len(final_results) < request.max_results:
-                    final_results.append(result)
-        
-        # Calculate search performance metrics
-        search_time = (datetime.now() - start_time).total_seconds()
-        
-        # Update search history with results and performance metrics
-        cursor.execute("""
-            UPDATE search_history 
-            SET results_count = ?, search_time = CURRENT_TIMESTAMP 
-            WHERE id = ?
-        """, (len(final_results), search_id))
-        conn.commit()
-        
-        # Log performance for optimization
-        print(f"🔍 Search completed in {search_time:.3f}s: '{request.selected_text[:50]}...' -> {len(final_results)} results")
-        
-        return final_results
+        return results
         
     except Exception as e:
         print(f"❌ Search error: {e}")
@@ -581,6 +491,84 @@ async def search_related(request: SearchRequest):
     
     finally:
         conn.close()
+
+async def vector_search(request: SearchRequest, cursor, search_id: int, start_time):
+    """Vector-based semantic search using FAISS"""
+    # This function is disabled - falling back to text search
+    print("⚠️ Vector search called but disabled - using text search fallback")
+    return await fallback_text_search(request, cursor, search_id, start_time)
+
+async def fallback_text_search(request: SearchRequest, cursor, search_id: int, start_time):
+    """Fallback text-based search using keyword matching and text similarity"""
+    print(f"🔍 Using fallback text search for: '{request.selected_text[:50]}...'")
+    
+    # Get all sections from database
+    cursor.execute("""
+        SELECT s.id, s.section_title, s.section_text, s.page_number, d.filename, d.title
+        FROM sections s
+        JOIN documents d ON s.document_id = d.id
+        WHERE d.processing_status = 'completed'
+        ORDER BY s.id
+    """)
+    
+    all_sections = cursor.fetchall()
+    
+    # Simple text-based similarity scoring
+    query_words = set(request.selected_text.lower().split())
+    results = []
+    
+    for section in all_sections:
+        section_text = (section[2] or section[1] or "").lower()
+        section_words = set(section_text.split())
+        
+        # Calculate simple similarity based on word overlap
+        if len(query_words) == 0:
+            continue
+            
+        common_words = query_words.intersection(section_words)
+        similarity = len(common_words) / len(query_words)
+        
+        # Additional scoring for exact phrase matches
+        if request.selected_text.lower() in section_text:
+            similarity += 0.5
+        
+        # Check for partial phrase matches
+        query_phrases = request.selected_text.lower().split('. ')
+        for phrase in query_phrases:
+            if len(phrase.strip()) > 10 and phrase.strip() in section_text:
+                similarity += 0.2
+        
+        # Only include results with reasonable similarity
+        if similarity > 0.1:  # Lower threshold for text search
+            full_text = section[2] or section[1]
+            snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
+            
+            results.append(SearchResult(
+                document_name=section[4],
+                section_title=section[1] or "Untitled Section", 
+                snippet=snippet,
+                page_number=section[3] or 1,
+                similarity_score=min(similarity, 1.0),  # Cap at 1.0
+                highlight_text=request.selected_text
+            ))
+    
+    # Sort by similarity and limit results
+    results.sort(key=lambda x: x.similarity_score, reverse=True)
+    final_results = results[:request.max_results]
+    
+    # Calculate search performance metrics
+    search_time = (datetime.now() - start_time).total_seconds()
+    
+    # Update search history
+    cursor.execute("""
+        UPDATE search_history 
+        SET results_count = ?, search_time = CURRENT_TIMESTAMP 
+        WHERE id = ?
+    """, (len(final_results), search_id))
+    
+    print(f"🔍 Text search completed in {search_time:.3f}s: '{request.selected_text[:50]}...' -> {len(final_results)} results")
+    
+    return final_results
 
 @app.post("/insights")
 async def generate_insights(request: InsightsRequest):

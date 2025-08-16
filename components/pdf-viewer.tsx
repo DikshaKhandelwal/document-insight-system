@@ -290,6 +290,78 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(({ onTextSelection, s
       // Load the PDF with cache-busting URL
       const cacheUrl = url.includes('?') ? `${url}&v=${Date.now()}` : `${url}?v=${Date.now()}`
       
+      // Register event listener on adobeDCView BEFORE calling previewFile (per Adobe docs)
+      try {
+        adobeDCView.registerCallback(
+          window.AdobeDC.View.Enum.CallbackType.EVENT_LISTENER,
+          function(event: any) {
+            console.log('🎯 Adobe event received:', event.type)
+            
+            if (event.type === "PREVIEW_SELECTION_END") {
+              console.log('📋 PREVIEW_SELECTION_END detected - getting selected content')
+              
+              // Use the Adobe recommended pattern: previewFilePromise.then(adobeViewer => adobeViewer.getAPIs()...)
+              previewFilePromise.then((adobeViewer: any) => {
+                adobeViewer.getAPIs().then((apis: any) => {
+                  console.log('📡 Got APIs, calling getSelectedContent()')
+                  
+                  apis.getSelectedContent()
+                    .then((result: any) => {
+                      console.log('📝 getSelectedContent result:', result)
+                      console.log('📝 Raw result (stringified):', JSON.stringify(result, null, 2))
+                      
+                      // Extract text from the result object
+                      let selectedText = ''
+                      
+                      if (result && result.data) {
+                        if (typeof result.data === 'string') {
+                          // Direct string in data field
+                          selectedText = result.data.trim()
+                          console.log('📄 Extracted from result.data string:', selectedText)
+                        } else if (Array.isArray(result.data)) {
+                          // Array format: { data: [{ content: "text" }] }
+                          selectedText = result.data.map((item: any) => item.content || item.text || '').join(' ').trim()
+                          console.log('📄 Extracted from result.data array:', selectedText)
+                        }
+                      } else if (result && result.text) {
+                        selectedText = result.text.trim()
+                        console.log('📄 Extracted from result.text:', selectedText)
+                      } else if (result && typeof result === 'string') {
+                        selectedText = result.trim()
+                        console.log('📄 Extracted from string result:', selectedText)
+                      }
+                      
+                      if (selectedText && selectedText.length > 0) {
+                        console.log('✅ SELECTED TEXT:', selectedText)
+                        console.log('✅ Text length:', selectedText.length)
+                        console.log('==========================================')
+                        console.log('FULL SELECTED TEXT:')
+                        console.log(selectedText)
+                        console.log('==========================================')
+                        onTextSelection(selectedText)
+                      } else {
+                        console.log('❌ No text content found in selection result')
+                        console.log('❌ Result keys:', Object.keys(result || {}))
+                        console.log('❌ Result type:', typeof result)
+                      }
+                    })
+                    .catch((error: any) => console.warn('❌ getSelectedContent failed:', error))
+                }).catch((error: any) => console.warn('❌ getAPIs failed:', error))
+              }).catch((error: any) => console.warn('❌ previewFilePromise failed:', error))
+            }
+            
+            // Log other events for debugging
+            else {
+              console.log('📊 Other Adobe event:', event.type)
+            }
+          },
+          { enableFilePreviewEvents: true }
+        )
+        console.log('✅ Adobe event listener registered on adobeDCView')
+      } catch (error) {
+        console.warn('❌ Could not register Adobe event listener on adobeDCView:', error)
+      }
+      
   const previewFilePromise = adobeDCView.previewFile({
         content: { location: { url: cacheUrl } },
         metaData: { 

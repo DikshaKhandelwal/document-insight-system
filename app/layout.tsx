@@ -21,9 +21,9 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className={`${inter.variable} ${playfair.variable} antialiased`}>
+    <html lang="en" className={`${inter.variable} ${playfair.variable} antialiased`} suppressHydrationWarning>
       <body className="min-h-screen font-sans">
-        <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
+        <ThemeProvider>
           {children}
         </ThemeProvider>
       </body>
