@@ -668,13 +668,17 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
             full_text = row[2] or row[1] or ''
             snippet = full_text[:300] + '...' if len(full_text) > 300 else full_text
 
+            # Use the actual section content for highlighting instead of selected text
+            # This gives a much better chance of finding the text in the PDF
+            highlight_candidate = full_text.strip() if full_text else request.selected_text
+            
             results.append(SearchResult(
                 document_name=doc_name,
                 section_title=row[1] or 'Untitled',
                 snippet=snippet,
                 page_number=row[3] or 1,
                 similarity_score=sim,
-                highlight_text=request.selected_text
+                highlight_text=highlight_candidate
             ))
 
         # Sort and return top-k
@@ -770,13 +774,16 @@ async def minilm_semantic_search(request: SearchRequest, all_sections):
                 full_text = section[2] or section[1]
                 snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
                 
+                # Use actual section content for better highlighting
+                highlight_candidate = full_text.strip() if full_text else request.selected_text
+                
                 results.append(SearchResult(
                     document_name=section[4],
                     section_title=section[1] or "Untitled Section", 
                     snippet=snippet,
                     page_number=section[3] or 1,
                     similarity_score=float(similarity),
-                    highlight_text=request.selected_text
+                    highlight_text=highlight_candidate
                 ))
         
         print(f"✅ MiniLM semantic search found {len(results)} relevant sections")
@@ -819,13 +826,16 @@ async def basic_keyword_search(request: SearchRequest, all_sections):
             full_text = section[2] or section[1]
             snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
             
+            # Use actual section content for better highlighting
+            highlight_candidate = full_text.strip() if full_text else request.selected_text
+            
             results.append(SearchResult(
                 document_name=section[4],
                 section_title=section[1] or "Untitled Section", 
                 snippet=snippet,
                 page_number=section[3] or 1,
                 similarity_score=min(similarity, 1.0),  # Cap at 1.0
-                highlight_text=request.selected_text
+                highlight_text=highlight_candidate
             ))
     
     print(f"📝 Basic keyword search found {len(results)} relevant sections")
