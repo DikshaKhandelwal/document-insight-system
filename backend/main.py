@@ -100,6 +100,102 @@ def load_minilm_model():
             MINILM_AVAILABLE = False
     return sentence_model
 
+
+def extract_page_text_from_pdf(filename: str, page_number: Optional[int]):
+    """Try to extract text from a specific page in an uploaded PDF file.
+    Returns None on failure or when fitz is not available."""
+    try:
+        if fitz is None:
+            return None
+        if not filename:
+            return None
+        file_path = UPLOADS_DIR / filename
+        if not file_path.exists():
+            return None
+
+        # page_number is expected to be 1-based in DB; convert to 0-based index
+        try:
+            idx = int(page_number) - 1 if page_number is not None else 0
+        except Exception:
+            idx = 0
+
+        doc = fitz.open(str(file_path))
+        try:
+            if 0 <= idx < len(doc):
+                text = doc[idx].get_text()
+                return text.strip() if text else None
+        finally:
+            doc.close()
+    except Exception as e:
+        print('⚠️ Failed to extract page text for snippet:', e)
+    return None
+
+
+def build_snippet(preferred_text: Optional[str], fallback_title: Optional[str], filename: Optional[str] = None, page_number: Optional[int] = None, min_lines: int = 2, max_chars: int = 300) -> str:
+    """Construct a 2-3 line snippet for search results.
+    - preferred_text: section_text from DB (preferred)
+    - fallback_title: section title (heading)
+    - filename/page_number: used to extract page text if preferred_text is short
+    ``Returns`` a short snippet (<= max_chars) preferably containing 2 lines.
+    """
+    text = (preferred_text or '').strip()
+
+    # If section text is too short, try to pull page-level text from PDF
+    page_text = None
+    if (not text or len(text) < 60) and filename:
+        page_text = extract_page_text_from_pdf(filename, page_number)
+        # If we have page text and a fallback title, try to find the heading and extract the lines after it
+        if page_text:
+            try:
+                ft = (fallback_title or '').strip()
+                if ft:
+                    # Search lines to locate the heading line and capture the following non-empty lines
+                    all_lines = [ln for ln in page_text.splitlines()]
+                    found_snippet_lines = []
+                    for idx, ln in enumerate(all_lines):
+                        if ft.lower() in ln.lower():
+                            # Collect next few non-empty lines after the heading
+                            for next_ln in all_lines[idx+1: idx+1+ (min_lines * 3)]:
+                                if next_ln and next_ln.strip():
+                                    found_snippet_lines.append(next_ln.strip())
+                                if len(found_snippet_lines) >= min_lines:
+                                    break
+                            break
+
+                    if found_snippet_lines:
+                        # Use the lines after the heading as the snippet
+                        text = ' '.join(found_snippet_lines[:min_lines])
+                    else:
+                        # fallback to the whole page text if no heading-specific snippet found
+                        if len(page_text.strip()) > len(text):
+                            text = page_text.strip()
+            except Exception as e:
+                print('⚠️ Error while extracting heading-following snippet from page text:', e)
+                if page_text and len(page_text.strip()) > len(text):
+                    text = page_text.strip()
+
+    if not text:
+        text = (fallback_title or '').strip()
+
+    # Prefer returning 2-3 non-empty lines for context
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if lines:
+        if len(lines) >= min_lines + 1:
+            snippet = ' '.join(lines[: min_lines + 1 ])
+        else:
+            snippet = ' '.join(lines[: min_lines]) if len(lines) >= min_lines else ' '.join(lines)
+    else:
+        snippet = text
+
+    # Fallback to a character-limited snippet
+    if not snippet:
+        snippet = text[:max_chars]
+
+    if len(snippet) > max_chars:
+        snippet = snippet[:max_chars].rstrip() + '...'
+
+    return snippet
+
 try:
     import google.generativeai as genai
     LLM_AVAILABLE = True
@@ -665,12 +761,12 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
             doc_row = cursor.fetchone()
             doc_name = doc_row[0] if doc_row else 'Unknown'
 
-            full_text = row[2] or row[1] or ''
-            snippet = full_text[:300] + '...' if len(full_text) > 300 else full_text
+            # Build a multi-line snippet (prefer section text, fall back to page text)
+            full_text = row[2] or ''
+            snippet = build_snippet(full_text, row[1], filename=row[4], page_number=row[3])
 
             # Use the actual section content for highlighting instead of selected text
-            # This gives a much better chance of finding the text in the PDF
-            highlight_candidate = full_text.strip() if full_text else request.selected_text
+            highlight_candidate = (full_text.strip() if full_text else row[1] or request.selected_text)
             
             results.append(SearchResult(
                 document_name=doc_name,
@@ -771,11 +867,11 @@ async def minilm_semantic_search(request: SearchRequest, all_sections):
         for i, (section, similarity) in enumerate(zip(valid_sections, similarities)):
             # Set a reasonable threshold for semantic similarity
             if similarity > 0.15:  # MiniLM threshold
-                full_text = section[2] or section[1]
-                snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
-                
+                full_text = section[2] or ''
+                snippet = build_snippet(full_text, section[1], filename=section[4], page_number=section[3])
+
                 # Use actual section content for better highlighting
-                highlight_candidate = full_text.strip() if full_text else request.selected_text
+                highlight_candidate = (full_text.strip() if full_text else section[1] or request.selected_text)
                 
                 results.append(SearchResult(
                     document_name=section[4],
@@ -823,11 +919,11 @@ async def basic_keyword_search(request: SearchRequest, all_sections):
         
         # Only include results with reasonable similarity
         if similarity > 0.1:  # Lower threshold for basic text search
-            full_text = section[2] or section[1]
-            snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
-            
+            full_text = section[2] or ''
+            snippet = build_snippet(full_text, section[1], filename=section[4], page_number=section[3])
+
             # Use actual section content for better highlighting
-            highlight_candidate = full_text.strip() if full_text else request.selected_text
+            highlight_candidate = (full_text.strip() if full_text else section[1] or request.selected_text)
             
             results.append(SearchResult(
                 document_name=section[4],
