@@ -44,27 +44,43 @@ export default function Chatbot({ documentId }: ChatbotProps) {
   }
 
   return (
-    <div className="bg-slate-50 border rounded-lg p-4 flex flex-col gap-3">
-      <div className="flex-1 overflow-y-auto max-h-64 mb-2">
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`mb-2 text-sm ${msg.role === "user" ? "text-blue-900" : "text-green-900"}`}>
-            <span className="font-semibold mr-2">{msg.role === "user" ? "You:" : "AI:"}</span>
-            {msg.content}
+    <div className="h-full flex flex-col bg-slate-50">
+      {/* Messages area */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
+        {messages.length === 0 ? (
+          <div className="text-xs text-slate-500 text-center py-8">
+            Ask questions about the current document...
           </div>
-        ))}
+        ) : (
+          messages.map((msg, idx) => (
+            <div key={idx} className={`text-sm ${msg.role === "user" ? "text-blue-900" : "text-green-900"}`}>
+              <span className="font-semibold">{msg.role === "user" ? "You:" : "AI:"}</span>
+              <div className="mt-1 text-slate-700">{msg.content}</div>
+            </div>
+          ))
+        )}
       </div>
-      <div className="flex gap-2">
-        <input
-          className="flex-1 border rounded px-2 py-1 text-sm"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") sendMessage() }}
-          placeholder="Ask a question about this document..."
-          disabled={loading}
-        />
-        <Button size="sm" onClick={sendMessage} disabled={loading || !input.trim()}>
-          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <SendHorizonal className="w-4 h-4" />}
-        </Button>
+      
+      {/* Input area - sticky to bottom */}
+      <div className="border-t border-slate-200 p-4 bg-white">
+        <div className="flex gap-2">
+          <input
+            className="flex-1 border border-slate-300 rounded-md px-3 py-2 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") sendMessage() }}
+            placeholder="Ask a question about this document..."
+            disabled={loading}
+          />
+          <Button 
+            size="sm" 
+            onClick={sendMessage} 
+            disabled={loading || !input.trim()}
+            className="px-3"
+          >
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <SendHorizonal className="w-4 h-4" />}
+          </Button>
+        </div>
       </div>
     </div>
   )

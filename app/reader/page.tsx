@@ -105,6 +105,18 @@ export default function ReaderPage() {
     }
   }
 
+  const selectDocument = (filename: string) => {
+    const timestamp = Date.now()
+    const pdfUrl = `/api/files/${filename}?t=${timestamp}&cache=false`
+    console.log('Selecting document:', filename)
+    setCurrentPdf(pdfUrl)
+    
+    // Clear any previous document info
+    setSelectedText("")
+    setSearchResults([])
+    setInsights({})
+  }
+
   const loadDocument = (doc: any) => {
     if (doc.filename) {
       // Add timestamp to prevent caching issues
@@ -425,9 +437,115 @@ export default function ReaderPage() {
   const exampleResults = searchResults.filter(r => r.snippet.toLowerCase().includes('example') || r.snippet.toLowerCase().includes('case study') || r.snippet.toLowerCase().includes('instance'))
 
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row bg-gradient-to-br from-slate-50 to-white">
-      {/* Left Panel - Adobe PDF Viewer */}
-      <div className="flex-1 flex flex-col border-r border-slate-200 min-h-[50vh] lg:min-h-screen">
+    <div className="h-screen flex flex-col lg:flex-row bg-gradient-to-br from-slate-50 to-white overflow-hidden">
+      {/* Left Sidebar - Document Library & AI Chat */}
+      <div className="w-full lg:w-80 lg:min-w-[320px] h-screen flex flex-col bg-white border-r border-slate-200 order-3 lg:order-1 overflow-hidden relative">
+        {/* Document Library */}
+        <div className="h-2/3 border-b border-slate-200 flex flex-col bg-slate-50">
+          <div className="p-4 border-b border-slate-200 flex-shrink-0">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm font-medium text-slate-900">Document Library</span>
+              <Badge variant="outline" className="text-xs">
+                {documents.length} documents
+              </Badge>
+            </div>
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              variant="outline"
+              className="w-full text-xs h-7"
+              disabled={isUploading}
+            >
+              {isUploading ? (
+                <>
+                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                  Uploading...
+                </>
+              ) : (
+                <>
+                  <Upload className="w-3 h-3 mr-1" />
+                  {documents.length === 0 ? 'Upload PDFs' : 'Add More'}
+                </>
+              )}
+            </Button>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf"
+            multiple
+            onChange={async (event) => {
+              const files = Array.from(event.target.files || [])
+              if (files.length === 0) return
+
+              setIsUploading(true)
+              const formData = new FormData()
+              files.forEach(file => formData.append('files', file))
+
+              try {
+                const response = await fetch('/api/upload', {
+                  method: 'POST',
+                  body: formData
+                })
+                if (response.ok) {
+                  await loadDocuments()
+                }
+              } catch (error) {
+                console.error('Upload failed:', error)
+              } finally {
+                setIsUploading(false)
+              }
+            }}
+            className="hidden"
+          />
+          
+          {/* Document List - Scrollable */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-2">
+            {documents.length === 0 ? (
+              <div className="text-center py-8">
+                <div className="text-xs text-slate-500">No documents uploaded yet</div>
+              </div>
+            ) : (
+              documents.map((doc) => (
+                  <div
+                    key={doc.id}
+                    className={`p-2 rounded-lg border text-xs cursor-pointer transition-all duration-200 ${
+                      currentPdf === `/api/files/${doc.filename}`
+                        ? 'bg-blue-50 border-blue-200 shadow-sm'
+                        : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-slate-300'
+                    }`}
+                    onClick={() => selectDocument(doc.filename)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-slate-900 truncate">
+                        {doc.original_name || doc.filename}
+                      </span>
+                      <Badge
+                        variant={doc.processing_status === 'completed' ? 'default' : 'secondary'}
+                        className="text-xs ml-2 flex-shrink-0"
+                      >
+                        {doc.processing_status === 'completed' ? 'Ready' : 'Processing'}
+                      </Badge>
+                    </div>
+                    <p className="text-slate-600 mt-1 truncate">{doc.summary || 'Click to view document'}</p>
+                  </div>
+                ))
+            )}
+          </div>
+        </div>
+
+        {/* AI Q&A Chatbot */}
+        <div className="h-1/3 flex flex-col bg-slate-50">
+          <div className="p-4 border-b border-slate-200">
+            <h3 className="text-sm font-semibold text-slate-900">Ask AI about this document</h3>
+          </div>
+          <div className="flex-1 flex flex-col min-h-0">
+            <Chatbot documentId={currentPdf ? currentPdf.split("/").pop()?.split("?")[0] : undefined} />
+          </div>
+        </div>
+      </div>
+
+      {/* Center Panel - PDF Viewer */}
+      <div className="flex-1 flex flex-col border-r border-slate-200 h-full order-1 lg:order-2">
         {/* Header */}
         <div className="border-b border-slate-200 p-4 bg-white">
           <div className="flex items-center justify-between">
@@ -488,7 +606,7 @@ export default function ReaderPage() {
               <div className="text-center">
                 <FileText className="w-16 h-16 text-slate-400 mx-auto mb-4" />
                 <h3 className="text-lg font-medium text-slate-900 mb-2">No PDF Loaded</h3>
-                <p className="text-slate-600 mb-4">Select a document from the right panel</p>
+                <p className="text-slate-600 mb-4">Select a document from the left panel</p>
               </div>
             </div>
           )}
@@ -496,7 +614,7 @@ export default function ReaderPage() {
       </div>
 
       {/* Right Panel - Analysis Tabs */}
-      <div className="w-full lg:w-96 lg:max-w-md lg:min-w-[320px] flex flex-col bg-white border-l border-slate-200">
+      <div className="w-full lg:w-[500px] lg:max-w-2xl lg:min-w-[400px] h-full flex flex-col bg-white border-l border-slate-200 order-2 lg:order-3 overflow-hidden">
         {/* Top Controls */}
         <div className="border-b border-slate-200 p-4">
           <div className="flex items-center justify-between mb-4">
@@ -633,7 +751,7 @@ export default function ReaderPage() {
                           <CardContent className="p-3">
                             <div className="space-y-2">
                               <div className="flex items-center justify-between">
-                                <Badge variant="outline" className="text-xs truncate max-w-[120px]">
+                                <Badge variant="outline" className="text-xs truncate max-w-[180px]">
                                   {result.document_name}
                                 </Badge>
                                 <Badge variant="secondary" className="text-xs">
@@ -706,7 +824,7 @@ export default function ReaderPage() {
                           <CardContent className="p-3">
                             <div className="space-y-2">
                               <div className="flex items-center justify-between">
-                                <Badge variant="outline" className="text-xs truncate max-w-[120px]">
+                                <Badge variant="outline" className="text-xs truncate max-w-[180px]">
                                   {result.document_name}
                                 </Badge>
                                 <Badge className="text-xs bg-blue-100 text-blue-700">
@@ -773,7 +891,7 @@ export default function ReaderPage() {
                           <CardContent className="p-3">
                             <div className="space-y-2">
                               <div className="flex items-center justify-between">
-                                <Badge variant="outline" className="text-xs truncate max-w-[120px]">
+                                <Badge variant="outline" className="text-xs truncate max-w-[180px]">
                                   {result.document_name}
                                 </Badge>
                                 <Badge className="text-xs bg-red-100 text-red-700">
@@ -840,7 +958,7 @@ export default function ReaderPage() {
                           <CardContent className="p-3">
                             <div className="space-y-2">
                               <div className="flex items-center justify-between">
-                                <Badge variant="outline" className="text-xs truncate max-w-[120px]">
+                                <Badge variant="outline" className="text-xs truncate max-w-[180px]">
                                   {result.document_name}
                                 </Badge>
                                 <Badge className="text-xs bg-purple-100 text-purple-700">
@@ -995,106 +1113,6 @@ export default function ReaderPage() {
               </ScrollArea>
             </div>
           </Tabs>
-        </div>
-
-        {/* AI Q&A Chatbot */}
-        <div className="border-t border-slate-200 p-4 bg-slate-50">
-          <h3 className="text-sm font-semibold text-slate-900 mb-2">Ask AI about this document</h3>
-          <Chatbot documentId={currentPdf ? currentPdf.split("/").pop()?.split("?")[0] : undefined} />
-        </div>
-
-        {/* Document Library */}
-        <div className="border-t border-slate-200 p-4 bg-slate-50">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-medium text-slate-900">Document Library</span>
-            <Badge variant="outline" className="text-xs">
-              {documents.length} documents
-            </Badge>
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf"
-            multiple
-            onChange={async (event) => {
-              const files = Array.from(event.target.files || [])
-              if (files.length === 0) return
-
-              setIsUploading(true)
-              const formData = new FormData()
-              files.forEach(file => formData.append('files', file))
-
-              try {
-                const response = await fetch('/api/upload', {
-                  method: 'POST',
-                  body: formData
-                })
-                if (response.ok) {
-                  await loadDocuments()
-                }
-              } catch (error) {
-                console.error('Upload failed:', error)
-              } finally {
-                setIsUploading(false)
-              }
-            }}
-            className="hidden"
-          />
-          <div className="space-y-2 max-h-40 overflow-y-auto">
-            {documents.length === 0 ? (
-              <Button
-                onClick={() => fileInputRef.current?.click()}
-                variant="outline"
-                className="w-full text-xs h-8"
-                disabled={isUploading}
-              >
-                <Upload className="w-3 h-3 mr-2" />
-                {isUploading ? 'Uploading...' : 'Upload PDFs'}
-              </Button>
-            ) : (
-              <>
-                {documents.map((doc, index) => (
-                  <Card 
-                    key={doc.id} 
-                    className={`cursor-pointer transition-all duration-200 ${
-                      currentPdf && currentPdf.includes(doc.filename)
-                        ? 'bg-blue-50 border-blue-200 shadow-sm' 
-                        : 'bg-white hover:bg-slate-50 border-slate-200'
-                    }`}
-                    onClick={() => loadDocument(doc)}
-                  >
-                    <CardContent className="p-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium text-slate-900 truncate">
-                            {doc.title || doc.filename}
-                          </p>
-                          <p className="text-xs text-slate-600">
-                            {doc.total_sections} sections
-                          </p>
-                        </div>
-                        <Badge 
-                          variant={doc.processing_status === 'completed' ? 'default' : 'secondary'}
-                          className="text-xs ml-2"
-                        >
-                          {doc.processing_status === 'completed' ? '✓' : '...'}
-                        </Badge>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-                <Button
-                  onClick={() => fileInputRef.current?.click()}
-                  variant="outline"
-                  className="w-full text-xs h-8"
-                  disabled={isUploading}
-                >
-                  <Upload className="w-3 h-3 mr-2" />
-                  Add More PDFs
-                </Button>
-              </>
-            )}
-          </div>
         </div>
       </div>
     </div>
