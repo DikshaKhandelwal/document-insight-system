@@ -6,10 +6,15 @@ import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 
 interface AudioPlayerProps {
-  audioUrl: string
+  audioUrl: string; // can be full URL or just filename
 }
 
 export default function AudioPlayer({ audioUrl }: AudioPlayerProps) {
+  // If audioUrl is just a filename, prepend backend base URL
+  const resolvedAudioUrl = audioUrl.startsWith("http")
+    ? audioUrl
+    : `http://localhost:8000/audio/${audioUrl.replace(/^.*[\\\/]/, "")}`;
+
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -98,7 +103,7 @@ export default function AudioPlayer({ audioUrl }: AudioPlayerProps) {
 
   return (
     <div className="bg-slate-50 rounded-lg p-4">
-      <audio ref={audioRef} src={audioUrl} />
+      <audio ref={audioRef} src={resolvedAudioUrl} />
 
       <div className="flex items-center gap-3 mb-3">
         <Button onClick={togglePlay} size="sm" className="adobe-gradient text-white">

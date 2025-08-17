@@ -12,6 +12,7 @@ import { Search, FileText, Brain, Volume2, ArrowLeft, Sparkles, Lightbulb, Targe
 import Link from "next/link"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import PDFViewer from "@/components/pdf-viewer"
+import AudioPlayer from "@/components/audio-player"
 
 interface SearchResult {
   id: string
@@ -563,29 +564,11 @@ export default function ReaderPage() {
               {/* Audio Player */}
               {audioSegments.length > 0 && (
                 <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <Volume1 className="w-4 h-4 text-orange-600" />
-                      <span className="text-sm font-medium text-orange-900">Podcast Ready</span>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={togglePlayPause}
-                    >
-                      {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                    </Button>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Volume1 className="w-4 h-4 text-orange-600" />
+                    <span className="text-sm font-medium text-orange-900">Podcast Ready</span>
                   </div>
-                  <audio
-                    key={audioKey}
-                    ref={audioRef}
-                    onEnded={() => setIsPlaying(false)}
-                    onPause={() => setIsPlaying(false)}
-                    onPlay={() => setIsPlaying(true)}
-                    className="w-full"
-                    preload="metadata"
-                    controls
-                  />
+                  <AudioPlayer audioUrl={`/api/audio/${audioSegments[0].filename}?t=${Date.now()}`} />
                 </div>
               )}
             </div>
