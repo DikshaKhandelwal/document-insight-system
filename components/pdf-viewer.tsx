@@ -95,13 +95,18 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(({ onTextSelection, s
   // Expose methods to parent via ref
   useImperativeHandle(ref, () => ({
     jumpToPage: (page: number, x?: number, y?: number) => {
-      goToLocation(page, undefined, x, y)
+      // Return the promise so callers can await navigation
+      return goToLocation(page, undefined, x, y)
+    },
+    gotoLocation: (page: number, x?: number, y?: number) => {
+      return goToLocation(page, undefined, x, y)
     },
     highlightText: (text: string, page: number) => {
       // Navigate to page and clear previous selections
       console.log('Highlighting text:', text, 'on page:', page)
       clearPageSelection(page)
-      goToLocation(page, text)
+      // Try to navigate to the page and then search/highlight
+      goToLocation(page, text).catch((e) => console.warn('gotoLocation failed during highlight:', e))
       // Enable text selection to make sure user can interact
       enableTextSelection(true)
     },
@@ -618,47 +623,71 @@ const PDFViewer = forwardRef<PDFViewerRef, PDFViewerProps>(({ onTextSelection, s
     }
   }
 
-  const goToLocation = (pageNumber: number, searchText?: string, x?: number, y?: number) => {
-    if (adobeViewer && loadedPdfUrl) {
-      try {
-        console.log(`Navigating to page ${pageNumber}`, { searchText, x, y })
-        
-        // Use Adobe PDF Embed API gotoLocation method (correct API pattern)
-        if (adobeViewer.gotoLocation) {
-          // Use coordinates if provided, otherwise default to (0, 0)
-          const xCoord = x || 0
-          const yCoord = y || 0
-          
-          adobeViewer.gotoLocation({ pageNumber: pageNumber, x: xCoord, y: yCoord })
-            .then(() => {
-              console.log(`Successfully navigated to page ${pageNumber}`)
-              
-              // If we have search text, try to search for it in the PDF
-              if (searchText && adobeViewer.search) {
-                adobeViewer.search({ 
-                  query: searchText, 
-                  matchCase: false, 
-                  matchWholeWord: false 
-                })
-                .then(() => {
-                  console.log('Text search completed:', searchText)
-                })
-                .catch((error: any) => {
-                  console.warn('Could not search for text:', error)
-                })
-              }
-            })
-            .catch((error: any) => {
-              console.error('Error navigating to location:', error)
-            })
-        } else {
-          console.warn('Adobe gotoLocation API not available')
-        }
-      } catch (error) {
-        console.error('Error navigating to location:', error)
-      }
-    } else {
+  const goToLocation = async (pageNumber: number, searchText?: string, x?: number, y?: number): Promise<void> => {
+    if (!adobeViewer || !loadedPdfUrl) {
       console.warn('Adobe viewer not ready for navigation')
+      return Promise.reject(new Error('Adobe viewer not ready'))
+    }
+
+    try {
+      console.log(`Navigating to page ${pageNumber}`, { searchText, x, y })
+
+      const xCoord = x || 0
+      const yCoord = y || 0
+
+      // Try direct method on viewer instance first
+      if (typeof (adobeViewer as any).gotoLocation === 'function') {
+        try {
+          // Some SDK variants accept positional args, others accept an object
+          const res = (adobeViewer as any).gotoLocation.length >= 3
+            ? (adobeViewer as any).gotoLocation(pageNumber, xCoord, yCoord)
+            : (adobeViewer as any).gotoLocation({ pageNumber: pageNumber, x: xCoord, y: yCoord })
+
+          if (res && typeof res.then === 'function') {
+            await res
+          }
+          console.log(`Successfully navigated to page ${pageNumber} via viewer.gotoLocation`)
+        } catch (err) {
+          console.warn('viewer.gotoLocation threw, will try getAPIs fallback', err)
+          // Fall through to getAPIs fallback
+          throw err
+        }
+      } else if (typeof (adobeViewer as any).getAPIs === 'function') {
+        // Fallback: call apis.gotoLocation if available
+        try {
+          const apis = await (adobeViewer as any).getAPIs()
+          if (apis && typeof apis.gotoLocation === 'function') {
+            const res = apis.gotoLocation(pageNumber, xCoord, yCoord)
+            if (res && typeof res.then === 'function') await res
+            console.log(`Successfully navigated to page ${pageNumber} via apis.gotoLocation`)
+          } else {
+            console.warn('getAPIs() provided no gotoLocation method')
+            throw new Error('No gotoLocation in APIs')
+          }
+        } catch (err) {
+          console.warn('getAPIs().gotoLocation failed', err)
+          throw err
+        }
+      } else {
+        console.warn('No known API to perform gotoLocation on this viewer')
+        return Promise.reject(new Error('No gotoLocation API'))
+      }
+
+      // Optionally search for text after navigation
+      if (searchText && (adobeViewer as any).search) {
+        try {
+          const sres = (adobeViewer as any).search({ query: searchText, matchCase: false, matchWholeWord: false })
+          if (sres && typeof sres.then === 'function') await sres
+          console.log('Text search completed:', searchText)
+        } catch (e) {
+          console.warn('Could not search for text after navigation:', e)
+        }
+      }
+
+      return Promise.resolve()
+    } catch (error) {
+      console.error('Error navigating to location:', error)
+      return Promise.reject(error)
     }
   }
 
