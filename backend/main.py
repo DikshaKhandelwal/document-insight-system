@@ -27,8 +27,12 @@ from datetime import datetime
 from dotenv import load_dotenv
 from fastapi import Request
 
-# Load environment variables from .env file
-load_dotenv()
+# Base directory (directory containing this file). Use this to build absolute paths
+# so the server behaves the same regardless of current working directory.
+BASE_DIR = Path(__file__).resolve().parent
+
+# Load environment variables from backend/.env (falls back to process env)
+load_dotenv(BASE_DIR / '.env')
 
 import uvicorn
 try:
@@ -110,12 +114,43 @@ def extract_page_text_from_pdf(filename: str, page_number: Optional[int]):
             return None
         if not filename:
             return None
-        file_path = UPLOADS_DIR / filename
+
+        # Normalize filename: caller may pass a document id (int), a Path, or a filename string.
+        resolved_filename = None
+        try:
+            # If a Path was passed, use its name
+            if isinstance(filename, Path):
+                resolved_filename = filename.name
+            # If an int or numeric string was passed, look up filename from DB
+            elif isinstance(filename, int) or (isinstance(filename, str) and filename.isdigit()):
+                doc_id = int(filename)
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    cur = conn.cursor()
+                    cur.execute("SELECT filename FROM documents WHERE id = ?", (doc_id,))
+                    row = cur.fetchone()
+                    conn.close()
+                    if row:
+                        resolved_filename = row[0]
+                except Exception:
+                    resolved_filename = None
+            else:
+                # Expect a filename string
+                resolved_filename = str(filename)
+        except Exception:
+            resolved_filename = str(filename)
+
+        if not resolved_filename:
+            return None
+
+        file_path = UPLOADS_DIR / resolved_filename
         if not file_path.exists():
             return None
 
         # page_number is expected to be 1-based in DB; convert to 0-based index
         try:
+            if isinstance(page_number, Path):
+                page_number = int(page_number.name)
             idx = int(page_number) - 1 if page_number is not None else 0
         except Exception:
             idx = 0
@@ -197,6 +232,74 @@ def build_snippet(preferred_text: Optional[str], fallback_title: Optional[str], 
 
     return snippet
 
+
+def strip_intro_outro(text: str, remove_sentences: int = 1) -> str:
+    """Remove likely introductory or concluding sentences from text to focus semantic embeddings on core content.
+    This uses a simple heuristic: drop very short leading sentences or sentences containing common intro/executive words,
+    and drop trailing sentences that look like conclusions or references.
+    """
+    if not text:
+        return text
+    try:
+        # Split into sentences conservatively
+        sents = re.split(r'(?<=[\.\!\?])\s+', text.strip())
+        if len(sents) <= 2:
+            return text
+
+        # stronger heuristics
+        def looks_intro(s: str) -> bool:
+            sl = s.strip().lower()
+            intro_kw = ['introduction', 'abstract', 'overview', 'background', 'preface', 'table of contents', 'contents', 'about this', 'about the']
+            short = len(sl) < 60
+            phrase = any(k in sl for k in intro_kw)
+            starts_like = sl.startswith('in this') or sl.startswith('this chapter') or sl.startswith('this paper') or sl.startswith('we ') or sl.startswith('the aim')
+            return short or phrase or starts_like
+
+        def looks_outro(s: str) -> bool:
+            sl = s.strip().lower()
+            outro_kw = ['conclusion', 'conclusions', 'in conclusion', 'summary', 'references', 'acknowledg', 'further work', 'future work', 'thanks', 'thank you']
+            short = len(sl) < 60
+            phrase = any(k in sl for k in outro_kw)
+            return short or phrase
+
+        start = 0
+        end = len(sents)
+        # aggressively remove up to N leading intro-like sentences
+        max_leading = 3
+        leading = 0
+        while leading < max_leading and start < end and looks_intro(sents[start]):
+            start += 1
+            leading += 1
+
+        # aggressively remove up to N trailing outro-like sentences
+        max_trailing = 3
+        trailing = 0
+        while trailing < max_trailing and end - 1 >= start and looks_outro(sents[end - 1]):
+            end -= 1
+            trailing += 1
+
+        # If we removed almost everything, fall back to original conservative behavior
+        if end - start <= 1:
+            # try to keep the longest middle sentence instead of empty
+            mid = max(sents, key=lambda s: len(s))
+            return mid.strip()
+
+        trimmed = ' '.join(sents[start:end]).strip()
+
+        # Remove obvious boilerplate lines inside the text
+        boilerplate_patterns = ['table of contents', 'references', 'acknowledgements', 'copyright', 'all rights reserved']
+        lowered = trimmed.lower()
+        for bp in boilerplate_patterns:
+            if bp in lowered:
+                # drop everything from the pattern onwards
+                idx = lowered.find(bp)
+                trimmed = trimmed[:idx].strip()
+                break
+
+        return trimmed if trimmed else text
+    except Exception:
+        return text
+
 try:
     import google.generativeai as genai
     LLM_AVAILABLE = True
@@ -227,8 +330,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global configurations
-DATA_DIR = Path("data")
+# Global configurations (resolved relative to backend folder)
+DATA_DIR = BASE_DIR / "data"
 UPLOADS_DIR = DATA_DIR / "uploads"
 PROCESSED_DIR = DATA_DIR / "processed"
 AUDIO_DIR = DATA_DIR / "audio"
@@ -313,8 +416,11 @@ def init_vector_search():
     # Set global model to the sentence-transformers instance used for embeddings
     model = emb_model
 
-    # Prepare index storage path
-    faiss_store = Path(os.getenv('FAISS_INDEX_PATH', './data/embeddings'))
+    # Prepare index storage path (resolve relative paths against backend folder)
+    faiss_store_env = os.getenv('FAISS_INDEX_PATH', './data/embeddings')
+    faiss_store = Path(faiss_store_env)
+    if not faiss_store.is_absolute():
+        faiss_store = (BASE_DIR / faiss_store).resolve()
     faiss_store.mkdir(parents=True, exist_ok=True)
     index_file = faiss_store / 'faiss.index'
 
@@ -328,14 +434,14 @@ def init_vector_search():
                 faiss_index = faiss.read_index(str(index_file))
                 print(f"✅ Loaded FAISS index from {index_file}")
             except Exception as e:
-                print(f"⚠️ Failed to read existing FAISS index: {e}. Creating new index.")
-                # create fresh
-                quant = faiss.IndexFlatIP(EMBEDDING_DIM)
-                faiss_index = faiss.IndexIDMap(quant)
+                print(f"⚠️ Failed to read existing FAISS index: {e}. Creating new IndexIDMap-backed index.")
+                # create fresh IndexIDMap-backed index
+                base = faiss.IndexFlatIP(EMBEDDING_DIM)
+                faiss_index = faiss.IndexIDMap(base)
         else:
-            quant = faiss.IndexFlatIP(EMBEDDING_DIM)
-            faiss_index = faiss.IndexIDMap(quant)
-            print(f"✅ Created new FAISS index (dim={EMBEDDING_DIM})")
+            base = faiss.IndexFlatIP(EMBEDDING_DIM)
+            faiss_index = faiss.IndexIDMap(base)
+            print(f"✅ Created new FAISS IndexIDMap index (dim={EMBEDDING_DIM})")
 
         VECTOR_AVAILABLE = True
         return True
@@ -647,7 +753,12 @@ async def process_document(file_path: Path, document_id: int):
 
                 # Persist index to disk
                 try:
-                    faiss_store = Path(os.getenv('FAISS_INDEX_PATH', './data/embeddings'))
+                    # Resolve faiss_store the same way as init_vector_search
+                    faiss_store_env = os.getenv('FAISS_INDEX_PATH', './data/embeddings')
+                    faiss_store = Path(faiss_store_env)
+                    if not faiss_store.is_absolute():
+                        faiss_store = (BASE_DIR / faiss_store).resolve()
+                    faiss_store.mkdir(parents=True, exist_ok=True)
                     index_file = faiss_store / 'faiss.index'
                     faiss.write_index(faiss_index, str(index_file))
                     print(f"✅ Persisted FAISS index to {index_file}")
@@ -787,24 +898,139 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
         # Encode query
         query_vec = model.encode([request.selected_text], convert_to_numpy=True)
         # Normalize for cosine similarity via inner product
-        faiss.normalize_L2(query_vec)
+        try:
+            faiss.normalize_L2(query_vec)
+        except Exception:
+            # fallback normalization
+            qnorm = np.linalg.norm(query_vec, axis=1, keepdims=True)
+            qnorm[qnorm == 0] = 1.0
+            query_vec = query_vec / qnorm
 
         k = min(max(request.max_results or 8, 1), 50)
         distances, ids = faiss_index.search(query_vec.astype('float32'), k)
 
         results = []
-        found_ids = [int(i) for i in ids[0] if i != -1]
-        if not found_ids:
+
+        # Build list of candidate ids in the same order as ids[0] (skip -1)
+        candidate_pos = [pos for pos, raw in enumerate(ids[0]) if raw != -1]
+        candidate_ids = [int(ids[0][pos]) for pos in candidate_pos]
+        if not candidate_ids:
             return []
 
         # Fetch matching sections from DB by id
-        placeholders = ','.join('?' for _ in found_ids)
-        cursor.execute(f"SELECT id, section_title, section_text, page_number, document_id FROM sections WHERE id IN ({placeholders})", tuple(found_ids))
+        placeholders = ','.join('?' for _ in candidate_ids)
+        cursor.execute(f"SELECT id, section_title, section_text, page_number, document_id FROM sections WHERE id IN ({placeholders})", tuple(candidate_ids))
         rows = cursor.fetchall()
-
-        # Map id->row
         row_map = {r[0]: r for r in rows}
 
+        # Prepare texts in the same order for MiniLM scoring if available.
+        # Augment each section with page-level text and neighboring sections to give MiniLM more context.
+        candidate_texts = []
+        candidate_rows = []
+        # Collect document ids for candidates so we can load neighboring sections in bulk
+        doc_ids = set()
+        for cid in candidate_ids:
+            row = row_map.get(cid)
+            if row:
+                doc_ids.add(row[4])
+
+        # Load all sections for these documents to find neighbors
+        neighbors_map = {}
+        try:
+            if doc_ids:
+                placeholders = ','.join('?' for _ in doc_ids)
+                cursor.execute(f"SELECT id, document_id, section_title, section_text, page_number FROM sections WHERE document_id IN ({placeholders}) ORDER BY document_id, page_number, id", tuple(doc_ids))
+                all_doc_sections = cursor.fetchall()
+                # build mapping: document_id -> ordered list of sections
+                cur_map = {}
+                for r in all_doc_sections:
+                    did = r[1]
+                    cur_map.setdefault(did, []).append(r)
+                neighbors_map = cur_map
+        except Exception:
+            neighbors_map = {}
+
+        for cid in candidate_ids:
+            row = row_map.get(cid)
+            if not row:
+                candidate_rows.append(None)
+                candidate_texts.append("")
+                continue
+            candidate_rows.append(row)
+
+            # Base text: section text or title
+            base_text = row[2] or row[1] or ""
+
+            # Page-level context (if available)
+            page_ctx = ""
+            try:
+                # row[4] is document_id; need filename for extract_page_text_from_pdf
+                cursor.execute("SELECT filename FROM documents WHERE id = ?", (row[4],))
+                doc_row = cursor.fetchone()
+                doc_name = doc_row[0] if doc_row else None
+                if doc_name and row[3]:
+                    page_ctx = extract_page_text_from_pdf(doc_name, row[3]) or ""
+            except Exception:
+                page_ctx = ""
+
+            # Neighboring sections (previous + next) from the same document
+            neighbor_ctx = ""
+            try:
+                doc_sections = neighbors_map.get(row[4], [])
+                # find index
+                idx_in_doc = None
+                for i, s in enumerate(doc_sections):
+                    if s[0] == row[0]:
+                        idx_in_doc = i
+                        break
+                if idx_in_doc is not None:
+                    # previous
+                    if idx_in_doc - 1 >= 0:
+                        prev = doc_sections[idx_in_doc - 1]
+                        neighbor_ctx += (prev[3] or prev[2] or '') + '\n'
+                    # next
+                    if idx_in_doc + 1 < len(doc_sections):
+                        nxt = doc_sections[idx_in_doc + 1]
+                        neighbor_ctx += (nxt[3] or nxt[2] or '')
+            except Exception:
+                neighbor_ctx = ""
+
+            combined = base_text
+            if page_ctx:
+                combined = combined + '\n\n' + page_ctx
+            if neighbor_ctx:
+                combined = combined + '\n\n' + neighbor_ctx
+
+            candidate_texts.append(combined)
+
+        # Compute MiniLM similarities for candidates in batch if available
+        minilm_sims = None
+        try:
+            if SENTENCE_TRANSFORMER_AVAILABLE:
+                emb_model = load_minilm_model()
+                if emb_model is not None:
+                    q_emb = emb_model.encode([request.selected_text], convert_to_numpy=True)
+                    # strip intro/outro to focus embeddings on core content
+                    cleaned_texts = [strip_intro_outro(t) for t in candidate_texts]
+                    sec_embs = emb_model.encode(cleaned_texts, convert_to_numpy=True)
+                    # normalize
+                    sec_norms = np.linalg.norm(sec_embs, axis=1, keepdims=True)
+                    sec_norms[sec_norms == 0] = 1.0
+                    sec_embs = sec_embs / sec_norms
+                    q_norm = np.linalg.norm(q_emb)
+                    if q_norm == 0:
+                        q_norm = 1.0
+                    q_emb = q_emb / q_norm
+                    # cosine similarities
+                    try:
+                        minilm_sims = cosine_similarity(q_emb, sec_embs)[0].tolist()
+                    except Exception:
+                        minilm_sims = (sec_embs @ q_emb.reshape(-1,)).tolist()
+        except Exception as e:
+            print(f"⚠️ Error computing MiniLM sims for FAISS candidates: {e}")
+
+        # Iterate in original ids order and compute combined score using MiniLM (heavy) + FAISS + title boost
+        ml_index = 0
         for idx, raw_id in enumerate(ids[0]):
             if raw_id == -1:
                 continue
@@ -812,37 +1038,104 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
             row = row_map.get(sid)
             if not row:
                 continue
-            # Compute similarity score from distances (inner product on normalized vectors)
-            sim = float(distances[0][idx])
 
-            # Get document filename
+            # FAISS similarity at this position
+            faiss_sim = float(distances[0][idx])
+
+            # Document filename
             cursor.execute("SELECT filename FROM documents WHERE id = ?", (row[4],))
             doc_row = cursor.fetchone()
             doc_name = doc_row[0] if doc_row else 'Unknown'
 
-            # Build a multi-line snippet (prefer section text, fall back to page text)
             full_text = row[2] or ''
-            snippet = build_snippet(full_text, row[1], filename=row[4], page_number=row[3])
-
-            # Use the actual section content for highlighting instead of selected text
+            snippet = build_snippet(full_text, row[1], filename=doc_name, page_number=row[3])
             highlight_candidate = (full_text.strip() if full_text else row[1] or request.selected_text)
-            
+
+            # MiniLM similarity for this candidate (if computed)
+            minilm_sim = 0.0
+            try:
+                if minilm_sims is not None and ml_index < len(minilm_sims):
+                    minilm_sim = float(minilm_sims[ml_index])
+            except Exception:
+                minilm_sim = 0.0
+
+            # Title boost
+            title = (row[1] or '').lower()
+            title_boost = 0.0
+            try:
+                q_words = set([w.strip() for w in re.split(r"\W+", request.selected_text.lower()) if w.strip()])
+                title_words = set([w.strip() for w in re.split(r"\W+", title) if w.strip()])
+                if q_words and len(q_words & title_words) > 0:
+                    title_boost = 0.10
+            except Exception:
+                title_boost = 0.0
+
+            # Normalize faiss sim
+            try:
+                faiss_sim_norm = max(0.0, min(1.0, float(faiss_sim)))
+            except Exception:
+                faiss_sim_norm = 0.0
+
+            # Combine signals with higher weight for MiniLM
+            combined_score = (0.55 * minilm_sim) + (0.35 * faiss_sim_norm) + title_boost
+
+            # Apply threshold
+            threshold = float(request.similarity_threshold or 0.0)
+            if combined_score < threshold:
+                ml_index += 1
+                continue
+
             results.append(SearchResult(
                 document_name=doc_name,
                 section_title=row[1] or 'Untitled',
                 snippet=snippet,
                 page_number=row[3] or 1,
-                similarity_score=sim,
+                similarity_score=combined_score,
                 highlight_text=highlight_candidate
             ))
+            ml_index += 1
 
         # Sort and return top-k
         results.sort(key=lambda x: x.similarity_score, reverse=True)
         final = results[: (request.max_results or 8) ]
 
+        # If MiniLM is available, and we have fewer than requested results from FAISS,
+        # supplement with MiniLM semantic search to improve recall (cross-document).
+        try:
+            if SENTENCE_TRANSFORMER_AVAILABLE and len(final) < (request.max_results or 8):
+                remaining = (request.max_results or 8) - len(final)
+                # Fetch all sections for MiniLM semantic search
+                cursor.execute("""
+                    SELECT s.id, s.section_title, s.section_text, s.page_number, d.filename, d.title
+                    FROM sections s
+                    JOIN documents d ON s.document_id = d.id
+                    WHERE d.processing_status = 'completed'
+                    ORDER BY s.id
+                """)
+                all_sections = cursor.fetchall()
+                ml_results = await minilm_semantic_search(request, all_sections)
+
+                # Dedupe by section (use document_name+section_title or highlight_text) -- prefer section id mapping
+                existing_ids = set()
+                for r in final:
+                    # We can try to map by snippet and title if id not present; best-effort
+                    existing_ids.add((r.document_name, r.section_title))
+
+                for mr in ml_results:
+                    if remaining <= 0:
+                        break
+                    key = (mr.document_name, mr.section_title)
+                    if key in existing_ids:
+                        continue
+                    final.append(mr)
+                    existing_ids.add(key)
+                    remaining -= 1
+        except Exception as e:
+            print(f"⚠️ Error while supplementing FAISS results with MiniLM: {e}")
+
         search_time = (datetime.now() - start_time).total_seconds()
         cursor.execute("UPDATE search_history SET results_count = ?, search_time = CURRENT_TIMESTAMP WHERE id = ?", (len(final), search_id))
-        print(f"🔍 FAISS vector search completed in {search_time:.3f}s -> {len(final)} results")
+        print(f"🔍 FAISS vector search completed in {search_time:.3f}s -> {len(final)} results (after supplement)")
         return final
 
     except Exception as e:
@@ -909,6 +1202,7 @@ async def minilm_semantic_search(request: SearchRequest, all_sections):
         
         for section in all_sections:
             section_text = section[2] or section[1] or ""
+            section_text = strip_intro_outro(section_text)
             if len(section_text.strip()) > 10:  # Only process sections with meaningful content
                 section_texts.append(section_text)
                 valid_sections.append(section)
@@ -1417,6 +1711,27 @@ async def get_system_stats():
             "audio_generation": TTS_AVAILABLE
         }
     }
+
+
+@app.post("/reload_index")
+async def reload_faiss_index():
+    """Reload FAISS index from disk. Returns index stats or error."""
+    global faiss_index, VECTOR_AVAILABLE
+    try:
+        import faiss
+        faiss_store_env = os.getenv('FAISS_INDEX_PATH', './data/embeddings')
+        faiss_store = Path(faiss_store_env)
+        if not faiss_store.is_absolute():
+            faiss_store = (BASE_DIR / faiss_store).resolve()
+        index_file = faiss_store / 'faiss.index'
+        if not index_file.exists():
+            return {"ok": False, "error": f"Index file not found at {index_file}"}
+
+        faiss_index = faiss.read_index(str(index_file))
+        VECTOR_AVAILABLE = True
+        return {"ok": True, "total_vectors": faiss_index.ntotal}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 # Serve the React frontend (if built)
 frontend_path = Path(__file__).parent.parent / "build"
