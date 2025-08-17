@@ -13,6 +13,7 @@ import Link from "next/link"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import PDFViewer from "@/components/pdf-viewer"
 import AudioPlayer from "@/components/audio-player"
+import Chatbot from "@/components/chatbot"
 
 interface SearchResult {
   id: string
@@ -996,6 +997,12 @@ export default function ReaderPage() {
           </Tabs>
         </div>
 
+        {/* AI Q&A Chatbot */}
+        <div className="border-t border-slate-200 p-4 bg-slate-50">
+          <h3 className="text-sm font-semibold text-slate-900 mb-2">Ask AI about this document</h3>
+          <Chatbot documentId={currentPdf ? currentPdf.split("/").pop()?.split("?")[0] : undefined} />
+        </div>
+
         {/* Document Library */}
         <div className="border-t border-slate-200 p-4 bg-slate-50">
           <div className="flex items-center justify-between mb-3">
@@ -1004,7 +1011,6 @@ export default function ReaderPage() {
               {documents.length} documents
             </Badge>
           </div>
-          
           <input
             ref={fileInputRef}
             type="file"
@@ -1034,7 +1040,6 @@ export default function ReaderPage() {
             }}
             className="hidden"
           />
-
           <div className="space-y-2 max-h-40 overflow-y-auto">
             {documents.length === 0 ? (
               <Button

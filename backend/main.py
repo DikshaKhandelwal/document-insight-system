@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from dotenv import load_dotenv
+from fastapi import Request
 
 # Load environment variables from .env file
 load_dotenv()
@@ -490,6 +491,64 @@ async def upload_documents(
         "message": f"Successfully uploaded {len(uploaded_files)} files",
         "files": uploaded_files
     }
+
+
+@app.post("/qa")
+async def qa_endpoint(request: Request):
+    """
+    Answer user questions about a document using Gemini LLM.
+    """
+    if not LLM_AVAILABLE:
+        return {"answer": "Gemini LLM is not available. Please check your API key and setup."}
+
+    body = await request.json()
+    print("Received /qa request:", body)
+    question = body.get("question", "")
+    document_id = body.get("document_id")
+
+    # Fetch document context (sections) if document_id is provided
+    context_text = ""
+    if document_id:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM documents WHERE filename = ?", (document_id,))
+        doc_row = cursor.fetchone()
+        if doc_row:
+            doc_id = doc_row[0]
+            cursor.execute("SELECT section_title, section_text FROM sections WHERE document_id = ? ORDER BY page_number, id LIMIT 10", (doc_id,))
+            sections = cursor.fetchall()
+            for title, text in sections:
+                context_text += f"Section: {title}\n{text}\n---\n"
+        conn.close()
+
+    # Build prompt for Gemini
+    if context_text:
+        prompt = f"""
+        You are an academic research assistant. Answer the user's question using the provided document context below. If the answer is not present, you may use your own knowledge to help the user.
+
+        Document Context:
+        {context_text}
+
+        User Question: {question}
+        """
+    else:
+        prompt = f"""
+        You are an academic research assistant. Answer the user's question as helpfully as possible. If document context is provided, use it. Otherwise, answer from your own knowledge.
+
+        User Question: {question}
+        """
+
+    try:
+        model_gemini = genai.GenerativeModel('gemini-1.5-flash')
+        response = model_gemini.generate_content(prompt)
+        print("Gemini response:", response.text)
+        answer = response.text.strip()
+    except Exception as e:
+        import traceback
+        print("Gemini API error in /qa endpoint:", traceback.format_exc())
+        answer = f"Error generating answer: {str(e)}"
+
+    return {"answer": answer}
 
 async def process_document(file_path: Path, document_id: int):
     """
