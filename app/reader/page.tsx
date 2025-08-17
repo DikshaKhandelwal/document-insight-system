@@ -73,6 +73,8 @@ export default function ReaderPage() {
   const pdfViewerRef = useRef<PDFViewerRef>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
+  // Force audio element to remount when a new file arrives to avoid stale metadata/state
+  const audioKey = audioSegments[0]?.filename || 'audio'
 
   useEffect(() => {
     loadDocuments()
@@ -280,18 +282,21 @@ export default function ReaderPage() {
         const files = result.audio_files || []
         setAudioSegments(files)
 
-        // Auto-load and attempt to play the generated single podcast file (if present)
+        // Auto-load the generated single podcast file (if present), do not auto-play
         if (files.length > 0 && audioRef.current) {
-          const url = `/api/audio/${files[0].filename}`
-          try {
-            audioRef.current.src = url
-            // Attempt to play; browsers may block autoplay without user gesture
-            const p = audioRef.current.play()
-            if (p && p.catch) p.catch((e) => console.warn('Autoplay prevented:', e))
-            setCurrentAudioIndex(0)
-            setIsPlaying(true)
-          } catch (e) {
-            console.warn('Could not auto-play audio:', e)
+          // Add cache-busting query to avoid stale cached responses
+          const url = `/api/audio/${files[0].filename}?t=${Date.now()}`
+          audioRef.current.src = url
+          // Force the browser to fetch metadata for the new source
+          try { audioRef.current.load() } catch {}
+          setCurrentAudioIndex(0)
+          setIsPlaying(false)
+          // Log when metadata is available (duration should be > 0)
+          audioRef.current.onloadedmetadata = () => {
+            console.log('Audio metadata loaded, duration:', audioRef.current?.duration)
+          }
+          audioRef.current.onerror = (e) => {
+            console.error('Audio load error:', e)
           }
         }
       } else {
@@ -304,30 +309,66 @@ export default function ReaderPage() {
     }
   }
 
-  const handleJumpToHighlight = async (result: SearchResult) => {
-    console.log('Opening in new tab:', result.page_number, result.highlight_text, 'from document:', result.document_name)
+  // Helper function to format snippet to show 2-3 lines
+  const formatSnippet = (snippet: string, maxLines: number = 3) => {
+    const sentences = snippet.split(/[.!?]+/).filter(s => s.trim().length > 0)
+    if (sentences.length <= maxLines) {
+      return snippet
+    }
+    // Take first 2-3 sentences and add ellipsis if truncated
+    return sentences.slice(0, maxLines).join('. ').trim() + (sentences.length > maxLines ? '...' : '')
+  }
+
+  const handleJumpToHighlight = async (result: SearchResult, openInNewTab: boolean = false) => {
+    console.log('Navigating to:', result.page_number, result.highlight_text, 'from document:', result.document_name)
     
-    // Create URL for the PDF with page parameter
-    const pdfUrl = `/api/files/${result.document_name}#page=${result.page_number}`
+    if (openInNewTab) {
+      // Open in new tab
+      const pdfUrl = `/api/files/${result.document_name}#page=${result.page_number}`
+      window.open(pdfUrl, '_blank', 'noopener,noreferrer')
+      console.log(`Opened "${result.section_title}" on page ${result.page_number} in new tab`)
+      return
+    }
     
-    // Open in new tab
-    window.open(pdfUrl, '_blank', 'noopener,noreferrer')
+    // Check if the result is from the current document
+    const currentDocName = currentPdf ? documents.find(d => `/api/files/${d.filename}` === currentPdf.split('?')[0])?.filename : null
     
-    console.log(`Opened "${result.section_title}" on page ${result.page_number} in new tab`)
+    if (currentDocName === result.document_name) {
+      // Navigate within current PDF viewer
+      navigateToPageAndHighlight(result)
+    } else {
+      // Load the document first, then navigate
+      const targetDoc = documents.find(d => d.filename === result.document_name)
+      if (targetDoc) {
+        loadDocument(targetDoc)
+        // Wait a moment for the PDF to load, then navigate
+        setTimeout(() => {
+          navigateToPageAndHighlight(result)
+        }, 1000)
+      } else {
+        console.warn('Document not found in library:', result.document_name)
+      }
+    }
   }
 
   const navigateToPageAndHighlight = (result: SearchResult) => {
     if (pdfViewerRef.current) {
+      console.log(`Navigating to page ${result.page_number} with text: "${result.highlight_text}"`)
+      
       // Clear any previous selections first
       pdfViewerRef.current.clearSelection(result.page_number)
       
       // Navigate to the page with slight offset to center the content
       pdfViewerRef.current.jumpToPage(result.page_number, 50, 100)
       
-      // Attempt to highlight the specific text
-      pdfViewerRef.current.highlightText(result.highlight_text, result.page_number)
+      // Wait a brief moment for page navigation, then highlight
+      setTimeout(() => {
+        if (pdfViewerRef.current && result.highlight_text) {
+          pdfViewerRef.current.highlightText(result.highlight_text, result.page_number)
+        }
+      }, 300)
       
-      // Show a toast or notification about the navigation
+      // Show a notification about the navigation
       console.log(`Navigated to "${result.section_title}" on page ${result.page_number}`)
     } else {
       console.warn('PDF viewer ref not available for navigation')
@@ -344,14 +385,31 @@ export default function ReaderPage() {
     }
   }
 
-  const togglePlayPause = () => {
-    if (audioRef.current) {
+  const togglePlayPause = async () => {
+    const audio = audioRef.current
+    if (!audio) return
+    try {
       if (isPlaying) {
-        audioRef.current.pause()
+        audio.pause()
+        setIsPlaying(false)
       } else {
-        audioRef.current.play()
+        // Ensure metadata is loaded before playing to avoid 0.00 duration issues
+        if (audio.readyState < 2) {
+          await new Promise<void>((resolve, reject) => {
+            const onLoaded = () => { audio.removeEventListener('loadeddata', onLoaded); resolve() }
+            const onError = () => { audio.removeEventListener('error', onError); reject(new Error('Audio load error')) }
+            audio.addEventListener('loadeddata', onLoaded, { once: true })
+            audio.addEventListener('error', onError, { once: true })
+            // Trigger load explicitly in case browser deferred it
+            try { audio.load() } catch {}
+          })
+        }
+        await audio.play()
+        setIsPlaying(true)
       }
-      setIsPlaying(!isPlaying)
+    } catch (err) {
+      console.warn('Play/pause error:', err)
+      setIsPlaying(false)
     }
   }
 
@@ -519,11 +577,13 @@ export default function ReaderPage() {
                     </Button>
                   </div>
                   <audio
+                    key={audioKey}
                     ref={audioRef}
                     onEnded={() => setIsPlaying(false)}
                     onPause={() => setIsPlaying(false)}
                     onPlay={() => setIsPlaying(true)}
                     className="w-full"
+                    preload="metadata"
                     controls
                   />
                 </div>
@@ -568,6 +628,23 @@ export default function ReaderPage() {
                           key={result.id} 
                           className="cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-green-500 hover:border-l-green-600"
                           onClick={() => handleJumpToHighlight(result)}
+                          onAuxClick={(e) => {
+                            // Middle click opens in new tab
+                            if (e.button === 1) {
+                              e.preventDefault()
+                              handleJumpToHighlight(result, true)
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            // Ctrl+Click or Cmd+Click opens in new tab
+                            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                              e.preventDefault()
+                              handleJumpToHighlight(result, true)
+                            } else if (e.key === 'Enter') {
+                              handleJumpToHighlight(result)
+                            }
+                          }}
+                          title={`Click to view in current PDF viewer (Page ${result.page_number}). Ctrl+Click or use 'New Tab' button to open in new tab.`}
                         >
                           <CardContent className="p-3">
                             <div className="space-y-2">
@@ -579,12 +656,28 @@ export default function ReaderPage() {
                                   {(result.similarity_score * 100).toFixed(0)}%
                                 </Badge>
                               </div>
-                              <div className="flex items-center gap-1 justify-end text-xs text-green-600">
-                                <ExternalLink className="w-3 h-3" />
-                                <span>Open in new tab</span>
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1 text-xs text-green-600">
+                                  <Eye className="w-3 h-3" />
+                                  <span>View in PDF</span>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 px-2 text-xs text-slate-500 hover:text-blue-600"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleJumpToHighlight(result, true)
+                                  }}
+                                >
+                                  <ExternalLink className="w-3 h-3 mr-1" />
+                                  New Tab
+                                </Button>
                               </div>
                               <h4 className="font-medium text-slate-900 text-sm leading-tight line-clamp-2">{result.section_title}</h4>
-                              <p className="text-xs text-slate-600 line-clamp-3">{result.snippet}</p>
+                              <div className="text-xs text-slate-600 space-y-1">
+                                <p className="line-clamp-4 leading-relaxed">{formatSnippet(result.snippet, 3)}</p>
+                              </div>
                               <div className="flex items-center gap-2 text-xs text-slate-500">
                                 <FileText className="w-3 h-3" />
                                 Page {result.page_number}
@@ -636,12 +729,28 @@ export default function ReaderPage() {
                                   {(result.similarity_score * 100).toFixed(0)}%
                                 </Badge>
                               </div>
-                              <div className="flex items-center gap-1 justify-end text-xs text-blue-600">
-                                <ExternalLink className="w-3 h-3" />
-                                <span>Open in new tab</span>
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1 text-xs text-blue-600">
+                                  <Eye className="w-3 h-3" />
+                                  <span>View in PDF</span>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 px-2 text-xs text-slate-500 hover:text-blue-600"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleJumpToHighlight(result, true)
+                                  }}
+                                >
+                                  <ExternalLink className="w-3 h-3 mr-1" />
+                                  New Tab
+                                </Button>
                               </div>
                               <h4 className="font-medium text-slate-900 text-sm leading-tight line-clamp-2">{result.section_title}</h4>
-                              <p className="text-xs text-slate-600 line-clamp-3">{result.snippet}</p>
+                              <div className="text-xs text-slate-600 space-y-1">
+                                <p className="line-clamp-4 leading-relaxed">{formatSnippet(result.snippet, 3)}</p>
+                              </div>
                               <div className="flex items-center gap-2 text-xs text-slate-500">
                                 <FileText className="w-3 h-3" />
                                 Page {result.page_number}
@@ -687,12 +796,28 @@ export default function ReaderPage() {
                                   Contradictory
                                 </Badge>
                               </div>
-                              <div className="flex items-center gap-1 justify-end text-xs text-red-600">
-                                <ExternalLink className="w-3 h-3" />
-                                <span>Open in new tab</span>
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1 text-xs text-red-600">
+                                  <Eye className="w-3 h-3" />
+                                  <span>View in PDF</span>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 px-2 text-xs text-slate-500 hover:text-blue-600"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleJumpToHighlight(result, true)
+                                  }}
+                                >
+                                  <ExternalLink className="w-3 h-3 mr-1" />
+                                  New Tab
+                                </Button>
                               </div>
                               <h4 className="font-medium text-slate-900 text-sm leading-tight line-clamp-2">{result.section_title}</h4>
-                              <p className="text-xs text-slate-600 line-clamp-3">{result.snippet}</p>
+                              <div className="text-xs text-slate-600 space-y-1">
+                                <p className="line-clamp-4 leading-relaxed">{formatSnippet(result.snippet, 3)}</p>
+                              </div>
                               <div className="flex items-center gap-2 text-xs text-slate-500">
                                 <FileText className="w-3 h-3" />
                                 Page {result.page_number}
@@ -738,12 +863,28 @@ export default function ReaderPage() {
                                   Example
                                 </Badge>
                               </div>
-                              <div className="flex items-center gap-1 justify-end text-xs text-purple-600">
-                                <ExternalLink className="w-3 h-3" />
-                                <span>Open in new tab</span>
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1 text-xs text-purple-600">
+                                  <Eye className="w-3 h-3" />
+                                  <span>View in PDF</span>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 px-2 text-xs text-slate-500 hover:text-blue-600"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleJumpToHighlight(result, true)
+                                  }}
+                                >
+                                  <ExternalLink className="w-3 h-3 mr-1" />
+                                  New Tab
+                                </Button>
                               </div>
                               <h4 className="font-medium text-slate-900 text-sm leading-tight line-clamp-2">{result.section_title}</h4>
-                              <p className="text-xs text-slate-600 line-clamp-3">{result.snippet}</p>
+                              <div className="text-xs text-slate-600 space-y-1">
+                                <p className="line-clamp-4 leading-relaxed">{formatSnippet(result.snippet, 3)}</p>
+                              </div>
                               <div className="flex items-center gap-2 text-xs text-slate-500">
                                 <FileText className="w-3 h-3" />
                                 Page {result.page_number}

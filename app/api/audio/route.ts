@@ -18,15 +18,10 @@ export async function POST(request: NextRequest) {
       throw new Error(`Backend responded with status: ${response.status}`)
     }
 
-    // Since this returns audio data, we need to handle it differently
-    const audioBuffer = await response.arrayBuffer()
+    // Return the JSON response from backend (contains audio_files array and metadata)
+    const data = await response.json()
     
-    return new NextResponse(audioBuffer, {
-      headers: {
-        'Content-Type': 'audio/wav',
-        'Content-Disposition': 'attachment; filename="insights.wav"',
-      },
-    })
+    return NextResponse.json(data)
   } catch (error) {
     console.error('Audio API error:', error)
     return NextResponse.json(
