@@ -1,0 +1,1070 @@
+#!/usr/bin/env python3
+"""
+Document Insight System - Fastry:
+    from google.cloud import texttospeech
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+    print("⚠️ Google Cloud Text-to-Speech not available. Audio generation disabled.")ackend
+Implements all features:
+1. PDF Upload & Parsing (Bulk + Fresh)
+2. Text Selection & Semantic Search
+3. Insights Generation (Related/Overlapping/Contradicting/Examples)
+4. Audio Overview / Podcast Mode
+5. FAISS Vector Storage
+6. SQLite Metadata Storage
+"""
+
+import os
+import sys
+import json
+import sqlite3
+import tempfile
+import asyncio
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+import uvicorn
+import numpy as np
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
+import aiofiles
+
+# Add lib directory to path for our PDF extractors
+sys.path.append(str(Path(__file__).parent.parent / "lib" / "pdf-extractors"))
+
+try:
+    from pdf_outline_extractor import SimplePDFExtractor
+except ImportError as e:
+    print(f"Error importing PDF extractors: {e}")
+    sys.exit(1)
+
+# Try to import optional dependencies
+try:
+    import faiss
+    from sentence_transformers import SentenceTransformer
+    VECTOR_AVAILABLE = True
+except ImportError:
+    VECTOR_AVAILABLE = False
+    print("⚠️ FAISS or sentence-transformers not available. Vector search disabled.")
+
+try:
+    import google.generativeai as genai
+    LLM_AVAILABLE = True
+except ImportError:
+    LLM_AVAILABLE = False
+    print("⚠️ Google Gemini not available. Insights generation disabled.")
+
+try:
+    import azure.cognitiveservices.speech as speechsdk
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+    print("⚠️ Azure Speech Services not available. Audio generation disabled.")
+
+# FastAPI app
+app = FastAPI(
+    title="Document Insight System",
+    description="Advanced PDF analysis with semantic search and AI insights",
+    version="1.0.0"
+)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001", "http://localhost:3002", "http://127.0.0.1:3002"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Global configurations
+DATA_DIR = Path("data")
+UPLOADS_DIR = DATA_DIR / "uploads"
+PROCESSED_DIR = DATA_DIR / "processed"
+AUDIO_DIR = DATA_DIR / "audio"
+DB_PATH = DATA_DIR / "documents.db"
+
+# Ensure directories exist
+for directory in [DATA_DIR, UPLOADS_DIR, PROCESSED_DIR, AUDIO_DIR]:
+    directory.mkdir(exist_ok=True)
+
+# Global instances
+pdf_extractor = SimplePDFExtractor()
+model = None
+faiss_index = None
+
+# Database initialization
+def init_database():
+    """Initialize SQLite database for document metadata."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Documents table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT UNIQUE NOT NULL,
+            title TEXT,
+            upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            processing_status TEXT DEFAULT 'pending',
+            total_sections INTEGER DEFAULT 0,
+            file_size INTEGER,
+            file_hash TEXT
+        )
+    """)
+    
+    # Sections table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER,
+            section_title TEXT NOT NULL,
+            section_text TEXT,
+            page_number INTEGER,
+            level TEXT,
+            embedding_index INTEGER,
+            FOREIGN KEY (document_id) REFERENCES documents (id)
+        )
+    """)
+    
+    # Search history table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS search_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_text TEXT NOT NULL,
+            selected_text TEXT,
+            results_count INTEGER,
+            search_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
+
+def init_vector_search():
+    """Initialize FAISS vector search and sentence transformer model."""
+    global model, faiss_index
+    
+    if not VECTOR_AVAILABLE:
+        return False
+    
+    try:
+        print("🧠 Loading sentence-transformers model...")
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        
+        # Initialize empty FAISS index (384 dimensions for all-MiniLM-L6-v2)
+        faiss_index = faiss.IndexFlatIP(384)  # Inner product for cosine similarity
+        
+        print("✅ Vector search initialized successfully")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to initialize vector search: {e}")
+        return False
+
+def init_llm():
+    """Initialize Gemini LLM for insights generation."""
+    try:
+        # Configure Gemini (you'll need to set GEMINI_API_KEY environment variable)
+        api_key = os.getenv("GEMINI_API_KEY")
+        if api_key:
+            genai.configure(api_key=api_key)
+            print("✅ Gemini LLM initialized successfully")
+            return True
+        else:
+            print("⚠️ GEMINI_API_KEY not set. Insights generation will be limited.")
+            return False
+    except Exception as e:
+        print(f"❌ Failed to initialize Gemini: {e}")
+        return False
+
+# Pydantic models
+class DocumentMetadata(BaseModel):
+    id: int
+    filename: str
+    title: str
+    upload_time: str
+    processing_status: str
+    total_sections: int
+    file_size: int
+
+class SectionData(BaseModel):
+    id: int
+    document_id: int
+    section_title: str
+    section_text: str
+    page_number: int
+    level: str
+
+class SearchRequest(BaseModel):
+    selected_text: str
+    context: Optional[str] = None
+    max_results: Optional[int] = 8
+    similarity_threshold: Optional[float] = 0.25  # Lower threshold for more results
+    include_metadata: Optional[bool] = True
+
+class SearchResult(BaseModel):
+    document_name: str
+    section_title: str
+    snippet: str
+    page_number: int
+    similarity_score: float
+    highlight_text: str
+
+class InsightsRequest(BaseModel):
+    selected_text: str
+    related_sections: List[Dict[str, Any]]
+    insight_types: List[str] = ["related", "overlapping", "contradicting", "examples", "extensions", "problems", "applications", "methodology"]
+    analysis_depth: Optional[str] = "standard"
+    focus_areas: Optional[List[str]] = None
+
+class AudioRequest(BaseModel):
+    selected_text: str
+    related_sections: List[Dict[str, Any]]
+    insights: Optional[Dict[str, Any]] = None
+    script_style: str = "engaging_podcast"
+    audio_format: Optional[Dict[str, Any]] = None
+    content_focus: Optional[List[str]] = None
+
+# Initialize everything
+print("🚀 Initializing Document Insight System Backend...")
+init_database()
+vector_enabled = init_vector_search()
+llm_enabled = init_llm()
+
+@app.get("/")
+async def root():
+    """Health check endpoint."""
+    return {
+        "message": "Document Insight System API",
+        "version": "1.0.0",
+        "features": {
+            "vector_search": vector_enabled,
+            "llm_insights": llm_enabled,
+            "audio_generation": TTS_AVAILABLE
+        }
+    }
+
+@app.post("/upload")
+async def upload_documents(
+    files: List[UploadFile] = File(...),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Upload and process PDF documents (bulk upload supported).
+    """
+    uploaded_files = []
+    
+    for file in files:
+        if not file.filename.endswith('.pdf'):
+            raise HTTPException(status_code=400, detail=f"Only PDF files allowed. Got: {file.filename}")
+        
+        # Save uploaded file
+        file_path = UPLOADS_DIR / file.filename
+        
+        async with aiofiles.open(file_path, 'wb') as f:
+            content = await file.read()
+            await f.write(content)
+        
+        # Store in database
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                INSERT OR REPLACE INTO documents (filename, file_size, processing_status)
+                VALUES (?, ?, 'pending')
+            """, (file.filename, len(content)))
+            
+            document_id = cursor.lastrowid
+            conn.commit()
+            
+            uploaded_files.append({
+                "id": document_id,
+                "filename": file.filename,
+                "size": len(content),
+                "status": "uploaded"
+            })
+            
+            # Schedule background processing
+            if background_tasks:
+                background_tasks.add_task(process_document, file_path, document_id)
+            
+        except sqlite3.IntegrityError:
+            # File already exists, get existing ID
+            cursor.execute("SELECT id FROM documents WHERE filename = ?", (file.filename,))
+            document_id = cursor.fetchone()[0]
+            uploaded_files.append({
+                "id": document_id,
+                "filename": file.filename,
+                "size": len(content),
+                "status": "already_exists"
+            })
+        
+        finally:
+            conn.close()
+    
+    return {
+        "message": f"Successfully uploaded {len(uploaded_files)} files",
+        "files": uploaded_files
+    }
+
+async def process_document(file_path: Path, document_id: int):
+    """
+    Background task to process uploaded PDF and extract sections.
+    """
+    try:
+        # Update status to processing
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE documents SET processing_status = 'processing' WHERE id = ?",
+            (document_id,)
+        )
+        conn.commit()
+        conn.close()
+        
+        # Extract outline using our PDF extractor
+        print(f"📖 Processing PDF: {file_path}")
+        result = pdf_extractor.extract_outline(str(file_path))
+        
+        title = result.get('title', file_path.stem)
+        outline = result.get('outline', [])
+        
+        # Store sections in database
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Update document with title and section count
+        cursor.execute("""
+            UPDATE documents 
+            SET title = ?, total_sections = ?, processing_status = 'completed'
+            WHERE id = ?
+        """, (title, len(outline), document_id))
+        
+        # Store sections
+        embeddings_to_add = []
+        for section in outline:
+            # The extractor returns 0-based page indices (page numbers starting at 0).
+            # Convert to 1-based page numbers for UI/Viewer compatibility.
+            raw_page = section.get('page', 0) or 0
+            try:
+                page_number = int(raw_page) + 1 if int(raw_page) >= 0 else 0
+            except Exception:
+                page_number = 0
+
+            cursor.execute("""
+                INSERT INTO sections (document_id, section_title, section_text, page_number, level)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                document_id,
+                section.get('text', ''),
+                section.get('text', ''),  # For now, use title as text
+                page_number,
+                section.get('level', 'H3')
+            ))
+            
+            # Prepare for vector embedding
+            if model and section.get('text'):
+                embeddings_to_add.append(section.get('text', ''))
+        
+        conn.commit()
+        conn.close()
+        
+        # Add to FAISS index if vector search is enabled
+        if model and faiss_index and embeddings_to_add:
+            print(f"🔍 Computing embeddings for {len(embeddings_to_add)} sections...")
+            embeddings = model.encode(embeddings_to_add, show_progress_bar=False)
+            
+            # Normalize for cosine similarity
+            faiss.normalize_L2(embeddings)
+            
+            # Add to index
+            faiss_index.add(embeddings.astype('float32'))
+            print(f"✅ Added {len(embeddings)} embeddings to FAISS index")
+        
+        print(f"✅ Successfully processed {file_path}")
+        
+    except Exception as e:
+        print(f"❌ Error processing {file_path}: {e}")
+        
+        # Update status to failed
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE documents SET processing_status = 'failed' WHERE id = ?",
+            (document_id,)
+        )
+        conn.commit()
+        conn.close()
+
+@app.get("/documents", response_model=List[DocumentMetadata])
+async def list_documents():
+    """Get list of all uploaded documents."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id, filename, title, upload_time, processing_status, total_sections, file_size
+        FROM documents
+        ORDER BY upload_time DESC
+    """)
+    
+    documents = []
+    for row in cursor.fetchall():
+        documents.append(DocumentMetadata(
+            id=row[0],
+            filename=row[1],
+            title=row[2] or row[1],
+            upload_time=row[3],
+            processing_status=row[4],
+            total_sections=row[5],
+            file_size=row[6] or 0
+        ))
+    
+    conn.close()
+    return documents
+
+@app.get("/documents/{document_id}/sections")
+async def get_document_sections(document_id: int):
+    """Get all sections for a specific document."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id, section_title, section_text, page_number, level
+        FROM sections
+        WHERE document_id = ?
+        ORDER BY page_number, id
+    """, (document_id,))
+    
+    sections = []
+    for row in cursor.fetchall():
+        sections.append({
+            "id": row[0],
+            "title": row[1],
+            "text": row[2],
+            "page": row[3],
+            "level": row[4]
+        })
+    
+    conn.close()
+    return {"document_id": document_id, "sections": sections}
+
+@app.post("/search", response_model=List[SearchResult])
+async def search_related(request: SearchRequest):
+    """
+    High-speed semantic search for related sections based on selected text.
+    Core feature for "connecting the dots" - optimized for speed and relevance.
+    """
+    if not model or not faiss_index:
+        raise HTTPException(status_code=503, detail="Vector search not available")
+    
+    # Store search in history with enhanced metadata
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO search_history (query_text, selected_text)
+        VALUES (?, ?)
+    """, (request.selected_text, request.selected_text))
+    search_id = cursor.lastrowid
+    conn.commit()
+    
+    try:
+        # Enhanced query preprocessing for better matching
+        query_text = request.selected_text
+        if request.context:
+            # Combine selected text with context for better semantic understanding
+            query_text = f"{request.selected_text} {request.context}"
+        
+        # Encode the selected text with enhanced preprocessing
+        start_time = datetime.now()
+        query_embedding = model.encode([query_text])
+        faiss.normalize_L2(query_embedding)
+        
+        # Search in FAISS index with expanded candidates for better recall
+        search_k = min(request.max_results * 3, faiss_index.ntotal)  # Get 3x more candidates
+        similarities, indices = faiss_index.search(
+            query_embedding.astype('float32'), 
+            search_k
+        )
+        
+        # Get section details from database with enhanced query
+        cursor.execute("""
+            SELECT s.id, s.section_title, s.section_text, s.page_number, d.filename, d.title, d.total_sections
+            FROM sections s
+            JOIN documents d ON s.document_id = d.id
+            WHERE d.processing_status = 'completed'
+            ORDER BY s.id
+        """)
+        
+        all_sections = cursor.fetchall()
+        
+        # Build enhanced results with better filtering
+        results = []
+        seen_documents = set()
+        
+        for i, (similarity, idx) in enumerate(zip(similarities[0], indices[0])):
+            if idx < len(all_sections) and similarity > request.similarity_threshold:
+                section = all_sections[idx]
+                
+                # Diversify results - don't over-represent single documents
+                doc_name = section[4]
+                if len([r for r in results if r.document_name == doc_name]) >= 2:
+                    continue
+                
+                # Create enhanced snippet with context
+                full_text = section[2] or section[1]  # Use section_text or title
+                snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
+                
+                # Calculate relevance score (0-100)
+                relevance_score = min(100, int(similarity * 100))
+                
+                results.append(SearchResult(
+                    document_name=section[4],
+                    section_title=section[1] or "Untitled Section",
+                    snippet=snippet,
+                    page_number=section[3] or 1,
+                    similarity_score=float(similarity),
+                    highlight_text=request.selected_text
+                ))
+                
+                seen_documents.add(doc_name)
+        
+        # Sort by relevance and diversify results
+        results.sort(key=lambda x: x.similarity_score, reverse=True)
+        
+        # Ensure diversity in top results
+        final_results = []
+        doc_counts = {}
+        
+        for result in results:
+            doc_count = doc_counts.get(result.document_name, 0)
+            if doc_count < 2 and len(final_results) < request.max_results:  # Max 2 per document
+                final_results.append(result)
+                doc_counts[result.document_name] = doc_count + 1
+        
+        # If we don't have enough diverse results, fill with remaining high-scoring results
+        if len(final_results) < request.max_results:
+            for result in results:
+                if result not in final_results and len(final_results) < request.max_results:
+                    final_results.append(result)
+        
+        # Calculate search performance metrics
+        search_time = (datetime.now() - start_time).total_seconds()
+        
+        # Update search history with results and performance metrics
+        cursor.execute("""
+            UPDATE search_history 
+            SET results_count = ?, search_time = CURRENT_TIMESTAMP 
+            WHERE id = ?
+        """, (len(final_results), search_id))
+        conn.commit()
+        
+        # Log performance for optimization
+        print(f"🔍 Search completed in {search_time:.3f}s: '{request.selected_text[:50]}...' -> {len(final_results)} results")
+        
+        return final_results
+        
+    except Exception as e:
+        print(f"❌ Search error: {e}")
+        # Graceful fallback - return empty results rather than failing
+        return []
+    
+    finally:
+        conn.close()
+
+@app.post("/insights")
+async def generate_insights(request: InsightsRequest):
+    """
+    Generate comprehensive AI insights: Related, Overlapping, Contradicting, Examples, Extensions, Problems, Applications, Methodology.
+    Uses Gemini 2.5 Flash for fast, accurate analysis grounded in user's document library.
+    """
+    if not LLM_AVAILABLE:
+        return {
+            "insights": {
+                "related": f"Found {len(request.related_sections)} related sections in your document library.",
+                "status": "LLM not available. Using rule-based insights."
+            },
+            "message": "LLM not available. Using rule-based insights."
+        }
+    
+    try:
+        # Prepare context from related sections
+        context_sections = []
+        for section in request.related_sections:
+            context_sections.append(f"Document: {section.get('document_name', 'Unknown')}")
+            context_sections.append(f"Section: {section.get('section_title', '')}")
+            context_sections.append(f"Content: {section.get('snippet', '')}")
+            context_sections.append(f"Similarity: {section.get('similarity_score', 0):.2f}")
+            context_sections.append("---")
+        
+        context_text = "\n".join(context_sections)
+        
+        insights = {}
+        
+        # Enhanced prompt system for comprehensive analysis
+        base_context = f"""
+        You are analyzing text from a user's personal document library. Provide insights that are:
+        - Grounded ONLY in the provided documents (not general knowledge)
+        - Specific and actionable
+        - Research-oriented and academic in tone
+        - Focused on helping users connect insights across their documents
+        
+        Selected Text: "{request.selected_text}"
+        
+        Related Sections from User's Documents:
+        {context_text}
+        
+        Analysis Depth: {request.analysis_depth}
+        Focus Areas: {', '.join(request.focus_areas or [])}
+        """
+        
+        # Generate different types of insights based on user specifications
+        for insight_type in request.insight_types:
+            if insight_type == "related":
+                prompt = f"""{base_context}
+                
+                TASK: Identify RELATED content and similar methods/concepts.
+                Provide 2-3 bullet points about:
+                • Similar methods, techniques, or concepts found in the user's documents
+                • Supporting evidence or corroborating findings
+                • Connections between the selected text and related research
+                
+                Focus on direct connections and methodological similarities."""
+                
+            elif insight_type == "overlapping":
+                prompt = f"""{base_context}
+                
+                TASK: Identify OVERLAPPING information and shared concepts.
+                Provide 2-3 bullet points about:
+                • Common themes or shared terminology across documents
+                • Overlapping research areas or methodologies
+                • Consistent findings or repeated concepts
+                
+                Focus on what's consistent across the user's document collection."""
+                
+            elif insight_type == "contradicting":
+                prompt = f"""{base_context}
+                
+                TASK: Identify CONTRADICTORY findings and opposing viewpoints.
+                Provide 2-3 bullet points about:
+                • Conflicting results or conclusions in the user's documents
+                • Different interpretations of similar data
+                • Opposing methodological approaches
+                
+                If no contradictions exist, state "No contradictions found in your document library."
+                Focus only on genuine conflicts, not just different approaches."""
+                
+            elif insight_type == "examples":
+                prompt = f"""{base_context}
+                
+                TASK: Identify specific EXAMPLES and case studies.
+                Provide 2-3 bullet points about:
+                • Concrete examples or case studies mentioned in the documents
+                • Practical applications described in the research
+                • Real-world implementations or experiments
+                
+                Focus on tangible, specific examples rather than theoretical concepts."""
+                
+            elif insight_type == "extensions":
+                prompt = f"""{base_context}
+                
+                TASK: Identify how other research has EXTENDED or built upon similar concepts.
+                Provide 2-3 bullet points about:
+                • How other papers in the collection have advanced the technique/concept
+                • Improvements or modifications described in related documents
+                • Follow-up research or subsequent developments
+                
+                Focus on progression and advancement of ideas."""
+                
+            elif insight_type == "problems":
+                prompt = f"""{base_context}
+                
+                TASK: Identify PROBLEMS and limitations discussed in the documents.
+                Provide 2-3 bullet points about:
+                • Limitations or shortcomings mentioned in the research
+                • Technical problems or implementation challenges
+                • Criticisms or concerns raised about the approach
+                
+                Focus on documented issues and challenges."""
+                
+            elif insight_type == "applications":
+                prompt = f"""{base_context}
+                
+                TASK: Identify REAL-WORLD APPLICATIONS and practical uses.
+                Provide 2-3 bullet points about:
+                • Industry applications or commercial uses mentioned
+                • Practical implementations in real-world scenarios
+                • Use cases or deployment examples
+                
+                Focus on practical, applied aspects rather than theoretical potential."""
+                
+            elif insight_type == "methodology":
+                prompt = f"""{base_context}
+                
+                TASK: Identify different METHODOLOGICAL APPROACHES.
+                Provide 2-3 bullet points about:
+                • Alternative research methods or experimental designs
+                • Different analytical approaches to similar problems
+                • Variations in data collection or analysis techniques
+                
+                Focus on methodological diversity and approaches."""
+            
+            try:
+                # Use Gemini for analysis with enhanced prompting
+                model_gemini = genai.GenerativeModel('gemini-1.5-flash')
+                response = model_gemini.generate_content(prompt)
+                insights[insight_type] = response.text.strip()
+                
+            except Exception as e:
+                insights[insight_type] = f"Error generating {insight_type} insights: {str(e)}"
+        
+        # Add metadata about the analysis
+        analysis_meta = {
+            "selected_text_length": len(request.selected_text),
+            "analyzed_sections": len(request.related_sections),
+            "analysis_timestamp": datetime.now().isoformat(),
+            "insight_types_generated": len([k for k, v in insights.items() if v and not v.startswith("Error")])
+        }
+        
+        return {
+            "insights": insights,
+            "selected_text": request.selected_text,
+            "analyzed_sections": len(request.related_sections),
+            "metadata": analysis_meta,
+            "status": "comprehensive_analysis_complete"
+        }
+        
+    except Exception as e:
+        return {
+            "insights": {
+                "related": f"Found {len(request.related_sections)} related sections in your document library for: \"{request.selected_text[:100]}...\"",
+                "status": f"Analysis error: {str(e)}. Showing basic results."
+            },
+            "error": f"Insights generation failed: {str(e)}",
+            "fallback": True
+        }
+
+@app.post("/audio")
+async def generate_audio(request: AudioRequest):
+    """
+    Generate engaging podcast-style audio overview.
+    Two speakers discuss the selected content and insights in a natural, dynamic way.
+    Content is grounded in the user's document library for trust and accuracy.
+    """
+    if not TTS_AVAILABLE:
+        return {
+            "script": "Audio generation not available - TTS services not configured.",
+            "audio_files": [],
+            "message": "Text-to-speech not available"
+        }
+    
+    try:
+        # Enhanced script generation using comprehensive insights
+        if LLM_AVAILABLE:
+            # Prepare comprehensive context
+            insights_context = ""
+            if request.insights:
+                for insight_type, content in request.insights.items():
+                    if content and not content.startswith("Error") and insight_type != "status":
+                        insights_context += f"\n{insight_type.title()} Insights: {content}\n"
+            
+            related_content = []
+            for section in request.related_sections:
+                related_content.append({
+                    "document": section.get('document_name', 'Unknown'),
+                    "section": section.get('section_title', ''),
+                    "content": section.get('snippet', ''),
+                    "relevance": section.get('similarity_score', 0)
+                })
+            
+            # Enhanced script prompt for engaging podcast content
+            script_prompt = f"""
+            Create an engaging, natural podcast conversation between two AI hosts discussing academic/research content.
+            Make it sound like a dynamic conversation between knowledgeable researchers, not robotic.
+            
+            CONTENT TO DISCUSS:
+            Selected Text: "{request.selected_text}"
+            
+            AI-Generated Insights:
+            {insights_context}
+            
+            Related Documents from User's Library:
+            {json.dumps(related_content, indent=2)}
+            
+            REQUIREMENTS:
+            - 3-5 minutes of natural conversation when spoken
+            - Two distinct voices: Host A (curious, asks questions) and Expert B (knowledgeable, provides insights)
+            - Include specific references to the user's documents
+            - Highlight key findings, contrasts, and connections
+            - Make it engaging and easy to follow
+            - Include natural conversational elements (transitions, emphasis, pauses)
+            - Ground everything in the provided documents - no external knowledge
+            
+            STRUCTURE:
+            1. Host A introduces the topic based on selected text
+            2. Expert B explains the key concept
+            3. Discussion of related findings from user's documents
+            4. Exploration of different perspectives or contradictions
+            5. Practical implications and examples
+            6. Wrap-up with key takeaways
+            
+            FORMAT: "Speaker A: [text]" and "Speaker B: [text]"
+            
+            Make it sound like two real people having an intelligent, enthusiastic discussion about the research!
+            """
+            
+            model_gemini = genai.GenerativeModel('gemini-1.5-flash')
+            response = model_gemini.generate_content(script_prompt)
+            script = response.text.strip()
+        else:
+            # Enhanced fallback script
+            script = f"""
+            Speaker A: Welcome to your personalized research insight podcast! Today we're diving deep into a fascinating topic from your document library.
+
+            Speaker B: That's right! We're exploring "{request.selected_text[:100]}..." and I have to say, the connections we found across your documents are really intriguing.
+
+            Speaker A: Tell us more about what you discovered.
+
+            Speaker B: Well, we analyzed {len(request.related_sections)} related sections from your personal research collection, and there are some compelling patterns emerging.
+
+            Speaker A: What kind of patterns are we talking about?
+
+            Speaker B: {f"Looking at your insights, we see {', '.join([k for k in request.insights.keys() if k != 'status'])} themes emerging." if request.insights else "The semantic analysis reveals interesting thematic connections across your documents."}
+
+            Speaker A: That's fascinating. How does this connect to the broader research landscape you've been building?
+
+            Speaker B: What's particularly interesting is that this isn't just theoretical - your document collection shows practical applications and real-world implementations that bridge different research areas.
+
+            Speaker A: For our listeners who want to explore this further, where should they look next in their document collection?
+
+            Speaker B: I'd recommend diving deeper into the related sections we identified - they offer complementary perspectives that could spark new research directions or validate current approaches.
+
+            Speaker A: Excellent insights! Thanks for this deep dive into your personalized research connections.
+            """
+        
+        # Parse script and generate audio with different voices
+        audio_files = []
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        lines = script.split('\n')
+        segment_counter = 0
+        
+        for i, line in enumerate(lines):
+            if line.strip():
+                speaker = None
+                text = ""
+                
+                if line.startswith('Speaker A:'):
+                    speaker = 'A'
+                    text = line.replace('Speaker A:', '').strip()
+                elif line.startswith('Speaker B:'):
+                    speaker = 'B'
+                    text = line.replace('Speaker B:', '').strip()
+                elif line.startswith('Host A:'):
+                    speaker = 'A'
+                    text = line.replace('Host A:', '').strip()
+                elif line.startswith('Expert B:'):
+                    speaker = 'B'
+                    text = line.replace('Expert B:', '').strip()
+                else:
+                    continue
+                
+                if text and len(text) > 10:  # Only process substantial text
+                    segment_counter += 1
+                    filename = f"podcast_{timestamp}_speaker{speaker}_{segment_counter:03d}.wav"
+                    audio_path = AUDIO_DIR / filename
+                    
+                    # Generate TTS with Azure Speech SDK (if configured)
+                    speech_key = os.getenv("AZURE_SPEECH_KEY")
+                    speech_region = os.getenv("AZURE_SPEECH_REGION")
+                    
+                    if speech_key and speech_region:
+                        try:
+                            speech_config = speechsdk.SpeechConfig(
+                                subscription=speech_key, 
+                                region=speech_region
+                            )
+                            
+                            # Use more natural, engaging voices
+                            if speaker == 'A':
+                                speech_config.speech_synthesis_voice_name = "en-US-JennyNeural"  # Friendly, curious tone
+                            else:
+                                speech_config.speech_synthesis_voice_name = "en-US-RyanNeural"   # Knowledgeable, expert tone
+                            
+                            # Enhanced speech settings for podcast quality
+                            speech_config.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3)
+                            
+                            audio_config = speechsdk.audio.AudioOutputConfig(filename=str(audio_path))
+                            synthesizer = speechsdk.SpeechSynthesizer(
+                                speech_config=speech_config, 
+                                audio_config=audio_config
+                            )
+                            
+                            # Add SSML for more natural speech
+                            ssml_text = f"""
+                            <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
+                                <voice name="{speech_config.speech_synthesis_voice_name}">
+                                    <prosody rate="0.9" pitch="+2%" volume="85">
+                                        {text}
+                                    </prosody>
+                                </voice>
+                            </speak>
+                            """
+                            
+                            result = synthesizer.speak_ssml_async(ssml_text).get()
+                            
+                            if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                                audio_files.append({
+                                    "speaker": speaker,
+                                    "filename": filename,
+                                    "text": text,
+                                    "duration_estimate": len(text) / 12,  # Rough estimate: 12 chars per second
+                                    "segment_order": segment_counter
+                                })
+                            else:
+                                print(f"Speech synthesis failed for segment {segment_counter}: {result.reason}")
+                                
+                        except Exception as e:
+                            print(f"TTS error for segment {segment_counter}: {e}")
+                    else:
+                        print("Azure Speech credentials not found. Audio files not generated.")
+        
+        # Calculate total estimated duration
+        total_duration = sum(file.get("duration_estimate", 0) for file in audio_files)
+        
+        return {
+            "script": script,
+            "audio_files": audio_files,
+            "total_segments": len(audio_files),
+            "estimated_duration_seconds": total_duration,
+            "content_summary": {
+                "selected_text_length": len(request.selected_text),
+                "related_documents": len(set(s.get('document_name', '') for s in request.related_sections)),
+                "insight_types": list(request.insights.keys()) if request.insights else [],
+                "generation_timestamp": datetime.now().isoformat()
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "script": f"Error generating podcast script: {str(e)}",
+            "audio_files": [],
+            "error": str(e),
+            "fallback_message": "Audio generation encountered an error. Please try again."
+        }
+
+@app.get("/audio/{filename}")
+async def get_audio_file(filename: str):
+    """Serve generated audio files."""
+    file_path = AUDIO_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    
+    return FileResponse(
+        file_path, 
+        media_type="audio/wav",
+        filename=filename
+    )
+
+@app.get("/files/{filename}")
+async def get_uploaded_file(filename: str):
+    """Serve uploaded PDF files for viewing."""
+    file_path = UPLOADS_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Security check - only allow PDF files
+    if not filename.endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    
+    return FileResponse(
+        file_path, 
+        media_type="application/pdf",
+        filename=filename,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
+
+@app.get("/stats")
+async def get_system_stats():
+    """Get system statistics and status."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Document stats
+    cursor.execute("SELECT COUNT(*) FROM documents")
+    total_docs = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM documents WHERE processing_status = 'completed'")
+    processed_docs = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM sections")
+    total_sections = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM search_history")
+    total_searches = cursor.fetchone()[0]
+    
+    # FAISS index stats
+    faiss_stats = {
+        "total_vectors": faiss_index.ntotal if faiss_index else 0,
+        "vector_dimension": 384 if model else 0
+    }
+    
+    conn.close()
+    
+    return {
+        "documents": {
+            "total": total_docs,
+            "processed": processed_docs,
+            "pending": total_docs - processed_docs
+        },
+        "sections": {"total": total_sections},
+        "searches": {"total": total_searches},
+        "vector_index": faiss_stats,
+        "features": {
+            "vector_search": vector_enabled,
+            "llm_insights": llm_enabled,
+            "audio_generation": TTS_AVAILABLE
+        }
+    }
+
+# Serve the React frontend (if built)
+frontend_path = Path(__file__).parent.parent / "build"
+if frontend_path.exists():
+    app.mount("/static", StaticFiles(directory=frontend_path / "static"), name="static")
+    
+    @app.get("/{path:path}")
+    async def serve_frontend(path: str):
+        """Serve React frontend for any non-API route."""
+        if path.startswith("api/"):
+            raise HTTPException(status_code=404)
+        
+        file_path = frontend_path / path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+        
+        # Fallback to index.html for React routing
+        return FileResponse(frontend_path / "index.html")
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )

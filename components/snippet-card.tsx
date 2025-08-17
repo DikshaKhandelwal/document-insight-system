@@ -59,8 +59,13 @@ export default function SnippetCard({ snippet, onClick, type }: SnippetCardProps
         <div className={cn("p-2 rounded-lg", config.bgColor)}>
           <IconComponent className={cn("w-4 h-4", config.textColor)} />
         </div>
-        <div className="flex-1 min-w-0">
-          <h4 className="font-medium text-slate-800 text-sm mb-1 truncate">{snippet.documentName}</h4>
+        <div className="flex-1">
+          <div
+            className="font-medium text-slate-800 text-[0.95rem] mb-1 break-all whitespace-normal w-full"
+            title={snippet.documentName}
+          >
+            {snippet.documentName}
+          </div>
           <p className="text-xs text-slate-500">
             {snippet.heading} • Page {snippet.page}
           </p>
