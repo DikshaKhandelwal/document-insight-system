@@ -614,7 +614,7 @@ export default function ReaderPage() {
       </div>
 
       {/* Right Panel - Analysis Tabs */}
-      <div className="w-full lg:w-[500px] lg:max-w-2xl lg:min-w-[400px] h-full flex flex-col bg-white border-l border-slate-200 order-2 lg:order-3 overflow-hidden">
+      <div className="w-full lg:w-96 lg:max-w-lg lg:min-w-[360px] h-full flex flex-col bg-white border-l border-slate-200 order-2 lg:order-3 overflow-hidden">
         {/* Top Controls */}
         <div className="border-b border-slate-200 p-4">
           <div className="flex items-center justify-between mb-4">
@@ -697,18 +697,20 @@ export default function ReaderPage() {
         {/* Analysis Tabs */}
         <div className="flex-1 overflow-hidden">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-            <TabsList className="grid w-full grid-cols-5 mx-4 mt-4">
-              <TabsTrigger value="related" className="text-xs">Related</TabsTrigger>
-              <TabsTrigger value="overlapping" className="text-xs">Overlap</TabsTrigger>
-              <TabsTrigger value="contradicting" className="text-xs">Contrast</TabsTrigger>
-              <TabsTrigger value="examples" className="text-xs">Examples</TabsTrigger>
-              <TabsTrigger value="insights" className="text-xs">Insights</TabsTrigger>
-            </TabsList>
+            <div className="border-b border-slate-200 mx-2 mt-2">
+              <TabsList className="grid w-full grid-cols-5 h-8 bg-slate-50">
+                <TabsTrigger value="related" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Related</TabsTrigger>
+                <TabsTrigger value="overlapping" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Overlap</TabsTrigger>
+                <TabsTrigger value="contradicting" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Contrast</TabsTrigger>
+                <TabsTrigger value="examples" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Examples</TabsTrigger>
+                <TabsTrigger value="insights" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Insights</TabsTrigger>
+              </TabsList>
+            </div>
 
-            <div className="flex-1 overflow-hidden">
-              <ScrollArea className="h-full px-4 py-4">
+            <div className="flex-1 overflow-hidden mt-2">
+              <ScrollArea className="h-full px-2">
                 {/* Related Tab */}
-                <TabsContent value="related" className="space-y-3 mt-0">
+                <TabsContent value="related" className="space-y-2 mt-0">
                   {isSearching ? (
                     <div className="flex items-center justify-center p-8">
                       <div className="flex flex-col items-center gap-3">
@@ -748,10 +750,10 @@ export default function ReaderPage() {
                           }}
                           title={`Click to view in current PDF viewer (Page ${result.page_number}). Ctrl+Click or use 'New Tab' button to open in new tab.`}
                         >
-                          <CardContent className="p-3">
-                            <div className="space-y-2">
+                          <CardContent className="p-2">
+                            <div className="space-y-1">
                               <div className="flex items-center justify-between">
-                                <Badge variant="outline" className="text-xs truncate max-w-[180px]">
+                                <Badge variant="outline" className="text-xs truncate max-w-[140px]">
                                   {result.document_name}
                                 </Badge>
                                 <Badge variant="secondary" className="text-xs">
@@ -766,7 +768,7 @@ export default function ReaderPage() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  className="h-6 px-2 text-xs text-slate-500 hover:text-blue-600"
+                                  className="h-5 px-1 text-xs text-slate-500 hover:text-blue-600"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     handleJumpToHighlight(result, true)
@@ -805,7 +807,7 @@ export default function ReaderPage() {
                 </TabsContent>
 
                 {/* Overlapping Tab */}
-                <TabsContent value="overlapping" className="space-y-3 mt-0">
+                <TabsContent value="overlapping" className="space-y-2 mt-0">
                   {overlappingResults.length > 0 ? (
                     <>
                       <div className="flex items-center gap-2 mb-3">
@@ -821,10 +823,10 @@ export default function ReaderPage() {
                           className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-blue-500"
                           onClick={() => handleJumpToHighlight(result)}
                         >
-                          <CardContent className="p-3">
-                            <div className="space-y-2">
+                          <CardContent className="p-2">
+                            <div className="space-y-1">
                               <div className="flex items-center justify-between">
-                                <Badge variant="outline" className="text-xs truncate max-w-[180px]">
+                                <Badge variant="outline" className="text-xs truncate max-w-[140px]">
                                   {result.document_name}
                                 </Badge>
                                 <Badge className="text-xs bg-blue-100 text-blue-700">
@@ -839,7 +841,7 @@ export default function ReaderPage() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  className="h-6 px-2 text-xs text-slate-500 hover:text-blue-600"
+                                  className="h-5 px-1 text-xs text-slate-500 hover:text-blue-600"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     handleJumpToHighlight(result, true)
@@ -872,7 +874,7 @@ export default function ReaderPage() {
                 </TabsContent>
 
                 {/* Contradicting Tab */}
-                <TabsContent value="contradicting" className="space-y-3 mt-0">
+                <TabsContent value="contradicting" className="space-y-2 mt-0">
                   {contradictingResults.length > 0 ? (
                     <>
                       <div className="flex items-center gap-2 mb-3">
@@ -888,10 +890,10 @@ export default function ReaderPage() {
                           className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-red-500"
                           onClick={() => handleJumpToHighlight(result)}
                         >
-                          <CardContent className="p-3">
-                            <div className="space-y-2">
+                          <CardContent className="p-2">
+                            <div className="space-y-1">
                               <div className="flex items-center justify-between">
-                                <Badge variant="outline" className="text-xs truncate max-w-[180px]">
+                                <Badge variant="outline" className="text-xs truncate max-w-[140px]">
                                   {result.document_name}
                                 </Badge>
                                 <Badge className="text-xs bg-red-100 text-red-700">
@@ -906,7 +908,7 @@ export default function ReaderPage() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  className="h-6 px-2 text-xs text-slate-500 hover:text-blue-600"
+                                  className="h-5 px-1 text-xs text-slate-500 hover:text-blue-600"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     handleJumpToHighlight(result, true)
@@ -939,7 +941,7 @@ export default function ReaderPage() {
                 </TabsContent>
 
                 {/* Examples Tab */}
-                <TabsContent value="examples" className="space-y-3 mt-0">
+                <TabsContent value="examples" className="space-y-2 mt-0">
                   {exampleResults.length > 0 ? (
                     <>
                       <div className="flex items-center gap-2 mb-3">
@@ -955,10 +957,10 @@ export default function ReaderPage() {
                           className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-purple-500"
                           onClick={() => handleJumpToHighlight(result)}
                         >
-                          <CardContent className="p-3">
-                            <div className="space-y-2">
+                          <CardContent className="p-2">
+                            <div className="space-y-1">
                               <div className="flex items-center justify-between">
-                                <Badge variant="outline" className="text-xs truncate max-w-[180px]">
+                                <Badge variant="outline" className="text-xs truncate max-w-[140px]">
                                   {result.document_name}
                                 </Badge>
                                 <Badge className="text-xs bg-purple-100 text-purple-700">
@@ -973,7 +975,7 @@ export default function ReaderPage() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  className="h-6 px-2 text-xs text-slate-500 hover:text-blue-600"
+                                  className="h-5 px-1 text-xs text-slate-500 hover:text-blue-600"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     handleJumpToHighlight(result, true)
@@ -1006,9 +1008,9 @@ export default function ReaderPage() {
                 </TabsContent>
 
                 {/* Insights Tab */}
-                <TabsContent value="insights" className="space-y-3 mt-0">
+                <TabsContent value="insights" className="space-y-2 mt-0">
                   {Object.keys(insights).length > 0 ? (
-                    <div className="space-y-3">
+                    <div className="space-y-2">
                       <div className="flex items-center gap-2 mb-3">
                         <Brain className="w-4 h-4 text-purple-600" />
                         <span className="font-medium text-slate-900">AI Analysis & Insights</span>
@@ -1019,13 +1021,13 @@ export default function ReaderPage() {
 
                       {insights.related && (
                         <Card className="bg-green-50 border-green-200">
-                          <CardHeader className="pb-2">
+                          <CardHeader className="pb-1">
                             <CardTitle className="text-sm text-green-800 flex items-center gap-2">
                               <Lightbulb className="w-4 h-4" />
                               Related Methods & Concepts
                             </CardTitle>
                           </CardHeader>
-                          <CardContent className="pt-0">
+                          <CardContent className="pt-0 pb-2">
                             <p className="text-sm text-green-700">{insights.related}</p>
                           </CardContent>
                         </Card>
@@ -1033,13 +1035,13 @@ export default function ReaderPage() {
 
                       {insights.overlapping && (
                         <Card className="bg-blue-50 border-blue-200">
-                          <CardHeader className="pb-2">
+                          <CardHeader className="pb-1">
                             <CardTitle className="text-sm text-blue-800 flex items-center gap-2">
                               <Sparkles className="w-4 h-4" />
                               Overlapping Information
                             </CardTitle>
                           </CardHeader>
-                          <CardContent className="pt-0">
+                          <CardContent className="pt-0 pb-2">
                             <p className="text-sm text-blue-700">{insights.overlapping}</p>
                           </CardContent>
                         </Card>
@@ -1047,13 +1049,13 @@ export default function ReaderPage() {
 
                       {insights.contradicting && insights.contradicting !== "No contradictions found." && (
                         <Card className="bg-red-50 border-red-200">
-                          <CardHeader className="pb-2">
+                          <CardHeader className="pb-1">
                             <CardTitle className="text-sm text-red-800 flex items-center gap-2">
                               <AlertCircle className="w-4 h-4" />
                               Contradictory Findings
                             </CardTitle>
                           </CardHeader>
-                          <CardContent className="pt-0">
+                          <CardContent className="pt-0 pb-2">
                             <p className="text-sm text-red-700">{insights.contradicting}</p>
                           </CardContent>
                         </Card>
@@ -1061,13 +1063,13 @@ export default function ReaderPage() {
 
                       {insights.examples && (
                         <Card className="bg-purple-50 border-purple-200">
-                          <CardHeader className="pb-2">
+                          <CardHeader className="pb-1">
                             <CardTitle className="text-sm text-purple-800 flex items-center gap-2">
                               <FileText className="w-4 h-4" />
                               Examples & Case Studies
                             </CardTitle>
                           </CardHeader>
-                          <CardContent className="pt-0">
+                          <CardContent className="pt-0 pb-2">
                             <p className="text-sm text-purple-700">{insights.examples}</p>
                           </CardContent>
                         </Card>
@@ -1075,13 +1077,13 @@ export default function ReaderPage() {
 
                       {insights.extensions && (
                         <Card className="bg-indigo-50 border-indigo-200">
-                          <CardHeader className="pb-2">
+                          <CardHeader className="pb-1">
                             <CardTitle className="text-sm text-indigo-800 flex items-center gap-2">
                               <Target className="w-4 h-4" />
                               Extensions & Applications
                             </CardTitle>
                           </CardHeader>
-                          <CardContent className="pt-0">
+                          <CardContent className="pt-0 pb-2">
                             <p className="text-sm text-indigo-700">{insights.extensions}</p>
                           </CardContent>
                         </Card>
