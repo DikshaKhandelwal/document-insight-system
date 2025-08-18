@@ -176,6 +176,17 @@ def build_snippet(preferred_text: Optional[str], fallback_title: Optional[str], 
     """
     text = (preferred_text or '').strip()
 
+    # Ensure filename is a string and page_number is an int
+    try:
+        if filename is not None and not isinstance(filename, str):
+            filename = str(filename)
+        if page_number is not None and not isinstance(page_number, int):
+            page_number = int(page_number)
+    except Exception:
+        # If conversion fails, skip page text extraction
+        filename = None
+        page_number = None
+
     # If section text is too short, try to pull page-level text from PDF
     page_text = None
     if (not text or len(text) < 60) and filename:
@@ -253,14 +264,18 @@ def strip_intro_outro(text: str, remove_sentences: int = 1) -> str:
             short = len(sl) < 60
             phrase = any(k in sl for k in intro_kw)
             starts_like = sl.startswith('in this') or sl.startswith('this chapter') or sl.startswith('this paper') or sl.startswith('we ') or sl.startswith('the aim')
-            return short or phrase or starts_like
+            # More aggressive: if sentence contains "introduction" as heading/title, remove it
+            heading_like = sl.startswith('introduction') or sl == 'introduction' or 'introduction:' in sl
+            return short or phrase or starts_like or heading_like
 
         def looks_outro(s: str) -> bool:
             sl = s.strip().lower()
             outro_kw = ['conclusion', 'conclusions', 'in conclusion', 'summary', 'references', 'acknowledg', 'further work', 'future work', 'thanks', 'thank you']
             short = len(sl) < 60
             phrase = any(k in sl for k in outro_kw)
-            return short or phrase
+            # More aggressive: if sentence contains "conclusion" as heading/title, remove it
+            heading_like = sl.startswith('conclusion') or sl == 'conclusion' or 'conclusion:' in sl or sl.startswith('conclusions')
+            return short or phrase or heading_like
 
         start = 0
         end = len(sents)
@@ -1059,16 +1074,21 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
             except Exception:
                 minilm_sim = 0.0
 
-            # Title boost
+            # Title boost/penalty: boost relevant terms, penalize intro/conclusion headings
             title = (row[1] or '').lower()
-            title_boost = 0.0
+            title_adjustment = 0.0
             try:
                 q_words = set([w.strip() for w in re.split(r"\W+", request.selected_text.lower()) if w.strip()])
                 title_words = set([w.strip() for w in re.split(r"\W+", title) if w.strip()])
-                if q_words and len(q_words & title_words) > 0:
-                    title_boost = 0.10
+                
+                # Check for intro/conclusion headings and penalize them
+                intro_conclusion_terms = ['introduction', 'conclusion', 'conclusions', 'abstract', 'summary']
+                if any(term in title for term in intro_conclusion_terms):
+                    title_adjustment = -0.15  # Penalize intro/conclusion sections
+                elif q_words and len(q_words & title_words) > 0:
+                    title_adjustment = 0.10  # Boost relevant terms
             except Exception:
-                title_boost = 0.0
+                title_adjustment = 0.0
 
             # Normalize faiss sim
             try:
@@ -1077,7 +1097,7 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
                 faiss_sim_norm = 0.0
 
             # Combine signals with higher weight for MiniLM
-            combined_score = (0.55 * minilm_sim) + (0.35 * faiss_sim_norm) + title_boost
+            combined_score = (0.55 * minilm_sim) + (0.35 * faiss_sim_norm) + title_adjustment
 
             # Apply threshold
             threshold = float(request.similarity_threshold or 0.0)
