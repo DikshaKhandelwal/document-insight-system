@@ -570,7 +570,7 @@ export default function ReaderPage() {
         {!isLeftPanelCollapsed && (
           <>
             {/* Document Library */}
-            <div className="h-2/3 border-b border-slate-200 flex flex-col bg-slate-50">
+            <div className="h-1/2 border-b border-slate-200 flex flex-col bg-slate-50">
           <div className="p-4 border-b border-slate-200 flex-shrink-0">
             <div className="flex items-center gap-2 mb-3">
               <span className="text-sm font-medium text-slate-900">Document Library</span>
@@ -680,7 +680,7 @@ export default function ReaderPage() {
         </div>
 
         {/* AI Q&A Chatbot */}
-        <div className="h-1/3 flex flex-col bg-slate-50">
+        <div className="h-1/2 flex flex-col bg-slate-50">
           <div className="p-4 border-b border-slate-200">
             <h3 className="text-sm font-semibold text-slate-900">Ask AI about this document</h3>
           </div>

@@ -44,8 +44,8 @@ export default function Chatbot({ documentId }: ChatbotProps) {
   }
 
   return (
-    <div className="bg-slate-50 border rounded-lg p-4 flex flex-col gap-3">
-      <div className="flex-1 overflow-y-auto max-h-64 mb-2">
+    <div className="h-full flex flex-col">
+      <div className="flex-1 overflow-y-auto p-4">
         {messages.map((msg, idx) => (
           <div key={idx} className={`mb-2 text-sm ${msg.role === "user" ? "text-blue-900" : "text-green-900"}`}>
             <span className="font-semibold mr-2">{msg.role === "user" ? "You:" : "AI:"}</span>
@@ -53,18 +53,20 @@ export default function Chatbot({ documentId }: ChatbotProps) {
           </div>
         ))}
       </div>
-      <div className="flex gap-2">
-        <input
-          className="flex-1 border rounded px-2 py-1 text-sm"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") sendMessage() }}
-          placeholder="Ask a question about this document..."
-          disabled={loading}
-        />
-        <Button size="sm" onClick={sendMessage} disabled={loading || !input.trim()}>
-          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <SendHorizonal className="w-4 h-4" />}
-        </Button>
+      <div className="border-t border-slate-200 p-4 bg-white">
+        <div className="flex gap-2">
+          <input
+            className="flex-1 border rounded px-2 py-1 text-sm"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") sendMessage() }}
+            placeholder="Ask a question about this document..."
+            disabled={loading}
+          />
+          <Button size="sm" onClick={sendMessage} disabled={loading || !input.trim()}>
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <SendHorizonal className="w-4 h-4" />}
+          </Button>
+        </div>
       </div>
     </div>
   )
