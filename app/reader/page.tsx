@@ -552,8 +552,7 @@ export default function ReaderPage() {
             <div className="flex items-center gap-4">
               <Link href="/">
                 <Button variant="ghost" size="sm" className="justify-start p-0 h-auto text-slate-600 hover:text-slate-900">
-                  <ArrowLeft className="w-4 h-4 mr-2" />
-                  Back to Home
+                  <ArrowLeft className="w-4 h-4" />
                 </Button>
               </Link>
               <div className="flex items-center gap-2">
