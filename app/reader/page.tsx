@@ -66,6 +66,7 @@ export default function ReaderPage() {
   const [isGeneratingAudio, setIsGeneratingAudio] = useState(false)
   const [currentPdf, setCurrentPdf] = useState<string | null>(null)
   const [documents, setDocuments] = useState<any[]>([])
+  const [documentSearchQuery, setDocumentSearchQuery] = useState("")
   const [uploadProgress, setUploadProgress] = useState<number>(0)
   const [isUploading, setIsUploading] = useState(false)
   const [currentAudioIndex, setCurrentAudioIndex] = useState<number>(0)
@@ -575,9 +576,39 @@ export default function ReaderPage() {
             <div className="flex items-center gap-2 mb-3">
               <span className="text-sm font-medium text-slate-900">Document Library</span>
               <Badge variant="outline" className="text-xs">
-                {documents.length} documents
+                {(() => {
+                  if (!documentSearchQuery.trim()) return `${documents.length} documents`;
+                  const filteredCount = documents.filter((doc) => {
+                    const query = documentSearchQuery.toLowerCase();
+                    const name = (doc.original_name || doc.filename || '').toLowerCase();
+                    const summary = (doc.summary || '').toLowerCase();
+                    return name.includes(query) || summary.includes(query);
+                  }).length;
+                  return `${filteredCount} of ${documents.length}`;
+                })()}
               </Badge>
             </div>
+            
+            {/* Search Input */}
+            <div className="relative mb-3">
+              <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 w-3 h-3 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search documents..."
+                value={documentSearchQuery}
+                onChange={(e) => setDocumentSearchQuery(e.target.value)}
+                className="w-full pl-7 pr-8 py-1.5 text-xs border border-slate-200 rounded focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400"
+              />
+              {documentSearchQuery && (
+                <button
+                  onClick={() => setDocumentSearchQuery("")}
+                  className="absolute right-2 top-1/2 transform -translate-y-1/2 w-3 h-3 text-slate-400 hover:text-slate-600"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+            
             <Button
               onClick={() => fileInputRef.current?.click()}
               variant="outline"
@@ -629,12 +660,35 @@ export default function ReaderPage() {
           
           {/* Document List - Scrollable */}
           <div className="flex-1 overflow-y-auto p-4 space-y-2">
-            {documents.length === 0 ? (
-              <div className="text-center py-8">
-                <div className="text-xs text-slate-500">No documents uploaded yet</div>
-              </div>
-            ) : (
-              documents.map((doc) => (
+            {(() => {
+              if (documents.length === 0) {
+                return (
+                  <div className="text-center py-8">
+                    <div className="text-xs text-slate-500">No documents uploaded yet</div>
+                  </div>
+                );
+              }
+
+              // Filter documents based on search query
+              const filteredDocuments = documents.filter((doc) => {
+                if (!documentSearchQuery.trim()) return true;
+                const query = documentSearchQuery.toLowerCase();
+                const name = (doc.original_name || doc.filename || '').toLowerCase();
+                const summary = (doc.summary || '').toLowerCase();
+                return name.includes(query) || summary.includes(query);
+              });
+
+              if (filteredDocuments.length === 0) {
+                return (
+                  <div className="text-center py-8">
+                    <Search className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                    <div className="text-xs text-slate-500 mb-1">No documents found</div>
+                    <div className="text-xs text-slate-400">Try a different search term</div>
+                  </div>
+                );
+              }
+
+              return filteredDocuments.map((doc) => (
                   <div
                     key={doc.id}
                     className={`p-2 rounded-lg border text-xs transition-all duration-200 ${
@@ -674,8 +728,8 @@ export default function ReaderPage() {
                       <p className="text-slate-600 mt-1 truncate">{doc.summary || 'Click to view document'}</p>
                     </div>
                   </div>
-                ))
-            )}
+                ));
+            })()}
           </div>
         </div>
 
