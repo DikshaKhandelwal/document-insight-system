@@ -31,8 +31,8 @@ from fastapi import Request
 # so the server behaves the same regardless of current working directory.
 BASE_DIR = Path(__file__).resolve().parent
 
-# Load environment variables from backend/.env (falls back to process env)
-load_dotenv(BASE_DIR / '.env')
+# Load environment variables from root/.env (falls back to process env)
+load_dotenv(BASE_DIR.parent / '.env')
 
 import uvicorn
 try:
