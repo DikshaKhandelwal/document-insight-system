@@ -106,6 +106,78 @@ export default function ReaderPage() {
     }
   }
 
+  const formatInsightText = (text: string) => {
+    if (!text) return []
+    
+    // Split text into paragraphs and bullet points for better formatting
+    const lines = text.split('\n').filter(line => line.trim())
+    
+    return lines.map((line, index) => {
+      line = line.trim()
+      
+      // Function to parse bold text (**text**)
+      const parseBoldText = (text: string) => {
+        const parts = text.split(/(\*\*.*?\*\*)/g)
+        return parts.map((part, partIndex) => {
+          if (part.startsWith('**') && part.endsWith('**')) {
+            const boldText = part.slice(2, -2)
+            return <strong key={partIndex} className="font-semibold">{boldText}</strong>
+          }
+          return part
+        })
+      }
+      
+      // Handle bullet points
+      if (line.startsWith('•') || line.startsWith('-') || line.startsWith('*')) {
+        const content = line.replace(/^[•\-*]\s*/, '')
+        return (
+          <li key={index} className="flex items-start gap-2 mb-2">
+            <span className="text-current mt-1 flex-shrink-0">•</span>
+            <span>{parseBoldText(content)}</span>
+          </li>
+        )
+      }
+      
+      // Handle numbered points
+      if (/^\d+[\.\)]\s/.test(line)) {
+        const match = line.match(/^(\d+)[\.\)]\s*(.*)/)
+        const content = match?.[2] || line.replace(/^\d+[\.\)]\s*/, '')
+        return (
+          <li key={index} className="flex items-start gap-2 mb-2">
+            <span className="text-current mt-1 flex-shrink-0 font-medium">{match?.[1]}.</span>
+            <span>{parseBoldText(content)}</span>
+          </li>
+        )
+      }
+      
+      // Regular paragraph
+      return (
+        <p key={index} className="mb-3 last:mb-0 leading-relaxed">
+          {parseBoldText(line)}
+        </p>
+      )
+    })
+  }
+
+  const renderFormattedInsight = (text: string, className: string = '') => {
+    const formattedContent = formatInsightText(text)
+    const hasListItems = text.includes('•') || text.includes('-') || text.includes('*') || /^\d+[\.\)]/.test(text)
+    
+    return (
+      <div className={`${className}`}>
+        {hasListItems && (text.includes('•') || text.includes('-') || text.includes('*') || /\d+[\.\)]/.test(text)) ? (
+          <ul className="space-y-1">
+            {formattedContent}
+          </ul>
+        ) : (
+          <div>
+            {formattedContent}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const selectDocument = (filename: string) => {
     const timestamp = Date.now()
     const pdfUrl = `/api/files/${filename}?t=${timestamp}&cache=false`
@@ -804,7 +876,7 @@ export default function ReaderPage() {
                       </div>
                       {relatedResults.map((result, index) => (
                         <Card 
-                          key={result.id} 
+                          key={`related-${result.id}-${index}`} 
                           className="cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-green-500 hover:border-l-green-600"
                           onClick={() => handleJumpToHighlight(result)}
                           onAuxClick={(e) => {
@@ -894,7 +966,7 @@ export default function ReaderPage() {
                       </div>
                       {overlappingResults.map((result, index) => (
                         <Card 
-                          key={result.id} 
+                          key={`overlap-${result.id}-${index}`} 
                           className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-blue-500"
                           onClick={() => handleJumpToHighlight(result)}
                         >
@@ -961,7 +1033,7 @@ export default function ReaderPage() {
                       </div>
                       {contradictingResults.map((result, index) => (
                         <Card 
-                          key={result.id} 
+                          key={`contrast-${result.id}-${index}`} 
                           className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-red-500"
                           onClick={() => handleJumpToHighlight(result)}
                         >
@@ -1028,7 +1100,7 @@ export default function ReaderPage() {
                       </div>
                       {exampleResults.map((result, index) => (
                         <Card 
-                          key={result.id} 
+                          key={`example-${result.id}-${index}`} 
                           className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-purple-500"
                           onClick={() => handleJumpToHighlight(result)}
                         >
@@ -1083,103 +1155,131 @@ export default function ReaderPage() {
                 </TabsContent>
 
                 {/* Insights Tab */}
-                <TabsContent value="insights" className="space-y-2 mt-0">
+                <TabsContent value="insights" className="space-y-3 mt-0">
                   {Object.keys(insights).length > 0 ? (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Brain className="w-4 h-4 text-purple-600" />
-                        <span className="font-medium text-slate-900">AI Analysis & Insights</span>
-                        <Badge variant="outline" className="text-xs">
-                          Generated by Gemini
+                    <div className="space-y-3">
+                      {/* Enhanced Header */}
+                      <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200/50 rounded-xl p-4">
+                        <div className="flex items-center gap-3 mb-2">
+                          <div className="p-2 bg-white rounded-full shadow-sm border border-purple-100">
+                            <Brain className="w-4 h-4 text-purple-600" />
+                          </div>
+                          <div>
+                            <h3 className="font-semibold text-slate-900 text-sm">AI Analysis & Insights</h3>
+                            <p className="text-xs text-slate-600">Generated by Gemini AI</p>
+                          </div>
+                        </div>
+                        <Badge variant="outline" className="text-xs bg-white/80 border-purple-200 text-purple-700">
+                          {Object.keys(insights).length} insights found
                         </Badge>
                       </div>
 
+                      {/* Enhanced Insights */}
                       {insights.related && (
-                        <Card className="bg-green-50 border-green-200">
-                          <CardHeader className="pb-1">
+                        <Card className="border border-green-200/60 bg-gradient-to-br from-green-50/80 to-green-50/40 shadow-sm hover:shadow-md transition-all duration-200">
+                          <CardHeader className="pb-3 pt-4">
                             <CardTitle className="text-sm text-green-800 flex items-center gap-2">
-                              <Lightbulb className="w-4 h-4" />
-                              Related Methods & Concepts
+                              <div className="p-1.5 bg-green-100/80 rounded-full">
+                                <Lightbulb className="w-3.5 h-3.5 text-green-600" />
+                              </div>
+                              <span className="font-medium">Related Methods & Concepts</span>
                             </CardTitle>
                           </CardHeader>
-                          <CardContent className="pt-0 pb-2">
-                            <p className="text-sm text-green-700">{insights.related}</p>
+                          <CardContent className="pt-0 pb-4">
+                            {renderFormattedInsight(insights.related, "text-sm text-green-700")}
                           </CardContent>
                         </Card>
                       )}
 
                       {insights.overlapping && (
-                        <Card className="bg-blue-50 border-blue-200">
-                          <CardHeader className="pb-1">
+                        <Card className="border border-blue-200/60 bg-gradient-to-br from-blue-50/80 to-blue-50/40 shadow-sm hover:shadow-md transition-all duration-200">
+                          <CardHeader className="pb-3 pt-4">
                             <CardTitle className="text-sm text-blue-800 flex items-center gap-2">
-                              <Sparkles className="w-4 h-4" />
-                              Overlapping Information
+                              <div className="p-1.5 bg-blue-100/80 rounded-full">
+                                <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                              </div>
+                              <span className="font-medium">Overlapping Information</span>
                             </CardTitle>
                           </CardHeader>
-                          <CardContent className="pt-0 pb-2">
-                            <p className="text-sm text-blue-700">{insights.overlapping}</p>
+                          <CardContent className="pt-0 pb-4">
+                            {renderFormattedInsight(insights.overlapping, "text-sm text-blue-700")}
                           </CardContent>
                         </Card>
                       )}
 
                       {insights.contradicting && insights.contradicting !== "No contradictions found." && (
-                        <Card className="bg-red-50 border-red-200">
-                          <CardHeader className="pb-1">
+                        <Card className="border border-red-200/60 bg-gradient-to-br from-red-50/80 to-red-50/40 shadow-sm hover:shadow-md transition-all duration-200">
+                          <CardHeader className="pb-3 pt-4">
                             <CardTitle className="text-sm text-red-800 flex items-center gap-2">
-                              <AlertCircle className="w-4 h-4" />
-                              Contradictory Findings
+                              <div className="p-1.5 bg-red-100/80 rounded-full">
+                                <AlertCircle className="w-3.5 h-3.5 text-red-600" />
+                              </div>
+                              <span className="font-medium">Contradictory Findings</span>
                             </CardTitle>
                           </CardHeader>
-                          <CardContent className="pt-0 pb-2">
-                            <p className="text-sm text-red-700">{insights.contradicting}</p>
+                          <CardContent className="pt-0 pb-4">
+                            {renderFormattedInsight(insights.contradicting, "text-sm text-red-700")}
                           </CardContent>
                         </Card>
                       )}
 
                       {insights.examples && (
-                        <Card className="bg-purple-50 border-purple-200">
-                          <CardHeader className="pb-1">
+                        <Card className="border border-purple-200/60 bg-gradient-to-br from-purple-50/80 to-purple-50/40 shadow-sm hover:shadow-md transition-all duration-200">
+                          <CardHeader className="pb-3 pt-4">
                             <CardTitle className="text-sm text-purple-800 flex items-center gap-2">
-                              <FileText className="w-4 h-4" />
-                              Examples & Case Studies
+                              <div className="p-1.5 bg-purple-100/80 rounded-full">
+                                <FileText className="w-3.5 h-3.5 text-purple-600" />
+                              </div>
+                              <span className="font-medium">Examples & Case Studies</span>
                             </CardTitle>
                           </CardHeader>
-                          <CardContent className="pt-0 pb-2">
-                            <p className="text-sm text-purple-700">{insights.examples}</p>
+                          <CardContent className="pt-0 pb-4">
+                            {renderFormattedInsight(insights.examples, "text-sm text-purple-700")}
                           </CardContent>
                         </Card>
                       )}
 
                       {insights.extensions && (
-                        <Card className="bg-indigo-50 border-indigo-200">
-                          <CardHeader className="pb-1">
+                        <Card className="border border-indigo-200/60 bg-gradient-to-br from-indigo-50/80 to-indigo-50/40 shadow-sm hover:shadow-md transition-all duration-200">
+                          <CardHeader className="pb-3 pt-4">
                             <CardTitle className="text-sm text-indigo-800 flex items-center gap-2">
-                              <Target className="w-4 h-4" />
-                              Extensions & Applications
+                              <div className="p-1.5 bg-indigo-100/80 rounded-full">
+                                <Target className="w-3.5 h-3.5 text-indigo-600" />
+                              </div>
+                              <span className="font-medium">Extensions & Applications</span>
                             </CardTitle>
                           </CardHeader>
-                          <CardContent className="pt-0 pb-2">
-                            <p className="text-sm text-indigo-700">{insights.extensions}</p>
+                          <CardContent className="pt-0 pb-4">
+                            {renderFormattedInsight(insights.extensions, "text-sm text-indigo-700")}
                           </CardContent>
                         </Card>
                       )}
                     </div>
                   ) : isGeneratingInsights ? (
-                    <div className="flex items-center justify-center p-8">
-                      <div className="flex flex-col items-center gap-3">
-                        <Loader2 className="animate-spin h-8 w-8 text-purple-600" />
-                        <p className="text-sm text-slate-600">Generating AI insights...</p>
+                    <div className="flex items-center justify-center p-10">
+                      <div className="flex flex-col items-center gap-4">
+                        <div className="relative">
+                          <div className="absolute inset-0 bg-gradient-to-r from-purple-400 to-blue-400 rounded-full opacity-20 animate-pulse"></div>
+                          <Loader2 className="animate-spin h-8 w-8 text-purple-600 relative z-10" />
+                        </div>
+                        <div className="text-center">
+                          <p className="text-sm font-medium text-slate-700 mb-1">Generating AI insights...</p>
+                          <p className="text-xs text-slate-500">Analyzing your selection with Gemini</p>
+                        </div>
                       </div>
                     </div>
                   ) : (
-                    <div className="text-center p-8">
-                      <Brain className="w-12 h-12 text-slate-400 mx-auto mb-4" />
-                      <p className="text-slate-600 mb-2">No insights generated yet</p>
-                      <p className="text-xs text-slate-500 mb-4">Select text and click "Generate Insights" above</p>
+                    <div className="text-center p-10">
+                      <div className="bg-gradient-to-br from-slate-50 to-slate-100 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+                        <Brain className="w-8 h-8 text-slate-400" />
+                      </div>
+                      <h3 className="text-slate-700 font-medium mb-2 text-sm">No insights generated yet</h3>
+                      <p className="text-xs text-slate-500 mb-6 max-w-xs mx-auto leading-relaxed">Select text from the PDF and click the button below to generate AI-powered insights</p>
                       <Button
                         onClick={generateInsights}
                         disabled={!selectedText || searchResults.length === 0}
                         size="sm"
+                        className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white shadow-md hover:shadow-lg transition-all duration-200"
                       >
                         <Brain className="w-4 h-4 mr-2" />
                         Generate Insights
