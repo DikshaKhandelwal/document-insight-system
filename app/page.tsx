@@ -58,6 +58,17 @@ export default function HomePage() {
               across your entire document library with AI precision.
             </p>
 
+            <div className="flex justify-center mt-6">
+              <Button
+                onClick={() => router.push("/reader")}
+                className="bg-slate-700 text-white font-medium px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 flex items-center gap-2"
+                size="lg"
+              >
+                <BookOpen className="w-5 h-5" />
+                Open Reader
+              </Button>
+            </div>
+
             <div className="flex flex-wrap justify-center gap-4 mt-8">
               <div className="flex items-center gap-2 bg-white/60 backdrop-blur-sm rounded-full px-4 py-2 border border-slate-200">
                 <Target className="w-4 h-4 text-red-700" />
