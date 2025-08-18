@@ -573,6 +573,57 @@ async def get_document_sections(document_id: int):
     conn.close()
     return {"document_id": document_id, "sections": sections}
 
+@app.delete("/documents/{document_id}")
+async def delete_document(document_id: int):
+    """Delete a document and all its associated data."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # First, get the document filename to delete the physical file
+        cursor.execute("SELECT filename FROM documents WHERE id = ?", (document_id,))
+        result = cursor.fetchone()
+        
+        if not result:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        filename = result[0]
+        
+        # Delete physical file
+        file_path = UPLOADS_DIR / filename
+        if file_path.exists():
+            file_path.unlink()
+        
+        # Delete from database (foreign key constraints should cascade)
+        # Delete sections first
+        cursor.execute("DELETE FROM sections WHERE document_id = ?", (document_id,))
+        
+        # Delete search history related to this document
+        cursor.execute("""
+            DELETE FROM search_history 
+            WHERE query_text IN (
+                SELECT section_text FROM sections WHERE document_id = ?
+            )
+        """, (document_id,))
+        
+        # Delete the document record
+        cursor.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+        
+        # Update FAISS index by removing embeddings for this document
+        # Note: For simplicity, we'll rebuild the index periodically
+        # In production, you might want to remove specific embeddings
+        
+        conn.commit()
+        conn.close()
+        
+        return {"message": "Document deleted successfully", "document_id": document_id}
+        
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
+
 @app.post("/search", response_model=List[SearchResult])
 async def search_related(request: SearchRequest):
     """

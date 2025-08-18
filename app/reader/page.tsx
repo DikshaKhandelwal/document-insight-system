@@ -8,7 +8,7 @@ import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Search, FileText, Brain, Volume2, ArrowLeft, Sparkles, Lightbulb, Target, Upload, Loader2, Play, Pause, Volume1, Download, AlertCircle, Eye, ExternalLink } from "lucide-react"
+import { Search, FileText, Brain, Volume2, ArrowLeft, Sparkles, Lightbulb, Target, Upload, Loader2, Play, Pause, Volume1, Download, AlertCircle, Eye, ExternalLink, Menu, X, Trash2 } from "lucide-react"
 import Link from "next/link"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import PDFViewer from "@/components/pdf-viewer"
@@ -71,6 +71,7 @@ export default function ReaderPage() {
   const [currentAudioIndex, setCurrentAudioIndex] = useState<number>(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [activeTab, setActiveTab] = useState("related")
+  const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(false)
   
   const pdfViewerRef = useRef<PDFViewerRef>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -115,6 +116,37 @@ export default function ReaderPage() {
     setSelectedText("")
     setSearchResults([])
     setInsights({})
+  }
+
+  const deleteDocument = async (docId: string, filename: string) => {
+    if (!confirm('Are you sure you want to delete this document?')) {
+      return
+    }
+
+    try {
+      const response = await fetch(`/api/documents/${docId}`, {
+        method: 'DELETE'
+      })
+
+      if (response.ok) {
+        // Reload documents list
+        await loadDocuments()
+        
+        // If the deleted document was currently open, clear the viewer
+        if (currentPdf?.includes(filename)) {
+          setCurrentPdf(null)
+          setSelectedText("")
+          setSearchResults([])
+          setInsights({})
+        }
+      } else {
+        console.error('Failed to delete document')
+        alert('Failed to delete document. Please try again.')
+      }
+    } catch (error) {
+      console.error('Error deleting document:', error)
+      alert('Failed to delete document. Please try again.')
+    }
   }
 
   const loadDocument = (doc: any) => {
@@ -439,11 +471,36 @@ export default function ReaderPage() {
   return (
     <div className="h-screen flex flex-col lg:flex-row bg-gradient-to-br from-slate-50 to-white overflow-hidden">
       {/* Left Sidebar - Document Library & AI Chat */}
-      <div className="w-full lg:w-80 lg:min-w-[320px] h-screen flex flex-col bg-white border-r border-slate-200 order-3 lg:order-1 overflow-hidden relative">
-        {/* Document Library */}
-        <div className="h-2/3 border-b border-slate-200 flex flex-col bg-slate-50">
+      <div className={`h-screen flex flex-col bg-white border-r border-slate-200 order-3 lg:order-1 overflow-hidden relative transition-all duration-300 ease-in-out ${
+        isLeftPanelCollapsed 
+          ? 'w-0 lg:w-12' 
+          : 'w-full lg:w-80 lg:min-w-[320px]'
+      }`}>
+        
+        {/* Collapse/Expand Button */}
+        <Button
+          onClick={() => setIsLeftPanelCollapsed(!isLeftPanelCollapsed)}
+          variant="ghost"
+          size="sm"
+          className={`absolute top-4 z-10 h-8 w-8 p-0 bg-white border border-slate-200 shadow-sm hover:bg-slate-50 transition-all duration-300 ${
+            isLeftPanelCollapsed 
+              ? 'right-2' 
+              : 'right-4'
+          }`}
+        >
+          {isLeftPanelCollapsed ? (
+            <Menu className="h-4 w-4" />
+          ) : (
+            <X className="h-4 w-4" />
+          )}
+        </Button>
+
+        {!isLeftPanelCollapsed && (
+          <>
+            {/* Document Library */}
+            <div className="h-2/3 border-b border-slate-200 flex flex-col bg-slate-50">
           <div className="p-4 border-b border-slate-200 flex-shrink-0">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 mb-3">
               <span className="text-sm font-medium text-slate-900">Document Library</span>
               <Badge variant="outline" className="text-xs">
                 {documents.length} documents
@@ -508,25 +565,42 @@ export default function ReaderPage() {
               documents.map((doc) => (
                   <div
                     key={doc.id}
-                    className={`p-2 rounded-lg border text-xs cursor-pointer transition-all duration-200 ${
+                    className={`p-2 rounded-lg border text-xs transition-all duration-200 ${
                       currentPdf === `/api/files/${doc.filename}`
                         ? 'bg-blue-50 border-blue-200 shadow-sm'
                         : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-slate-300'
                     }`}
-                    onClick={() => selectDocument(doc.filename)}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium text-slate-900 truncate">
-                        {doc.original_name || doc.filename}
-                      </span>
-                      <Badge
-                        variant={doc.processing_status === 'completed' ? 'default' : 'secondary'}
-                        className="text-xs ml-2 flex-shrink-0"
-                      >
-                        {doc.processing_status === 'completed' ? 'Ready' : 'Processing'}
-                      </Badge>
+                    <div 
+                      className="cursor-pointer"
+                      onClick={() => selectDocument(doc.filename)}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-slate-900 truncate">
+                          {doc.original_name || doc.filename}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <Badge
+                            variant={doc.processing_status === 'completed' ? 'default' : 'secondary'}
+                            className="text-xs flex-shrink-0"
+                          >
+                            {doc.processing_status === 'completed' ? 'Ready' : 'Processing'}
+                          </Badge>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              deleteDocument(doc.id, doc.filename)
+                            }}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                      <p className="text-slate-600 mt-1 truncate">{doc.summary || 'Click to view document'}</p>
                     </div>
-                    <p className="text-slate-600 mt-1 truncate">{doc.summary || 'Click to view document'}</p>
                   </div>
                 ))
             )}
@@ -542,6 +616,8 @@ export default function ReaderPage() {
             <Chatbot documentId={currentPdf ? currentPdf.split("/").pop()?.split("?")[0] : undefined} />
           </div>
         </div>
+        </>
+        )}
       </div>
 
       {/* Center Panel - PDF Viewer */}
