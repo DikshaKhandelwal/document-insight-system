@@ -25,14 +25,9 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from dotenv import load_dotenv
-from fastapi import Request
 
-# Base directory (directory containing this file). Use this to build absolute paths
-# so the server behaves the same regardless of current working directory.
-BASE_DIR = Path(__file__).resolve().parent
-
-# Load environment variables from root/.env (falls back to process env)
-load_dotenv(BASE_DIR.parent / '.env')
+# Load environment variables from .env file
+load_dotenv()
 
 import uvicorn
 try:
@@ -105,216 +100,6 @@ def load_minilm_model():
             MINILM_AVAILABLE = False
     return sentence_model
 
-
-def extract_page_text_from_pdf(filename: str, page_number: Optional[int]):
-    """Try to extract text from a specific page in an uploaded PDF file.
-    Returns None on failure or when fitz is not available."""
-    try:
-        if fitz is None:
-            return None
-        if not filename:
-            return None
-
-        # Normalize filename: caller may pass a document id (int), a Path, or a filename string.
-        resolved_filename = None
-        try:
-            # If a Path was passed, use its name
-            if isinstance(filename, Path):
-                resolved_filename = filename.name
-            # If an int or numeric string was passed, look up filename from DB
-            elif isinstance(filename, int) or (isinstance(filename, str) and filename.isdigit()):
-                doc_id = int(filename)
-                try:
-                    conn = sqlite3.connect(DB_PATH)
-                    cur = conn.cursor()
-                    cur.execute("SELECT filename FROM documents WHERE id = ?", (doc_id,))
-                    row = cur.fetchone()
-                    conn.close()
-                    if row:
-                        resolved_filename = row[0]
-                except Exception:
-                    resolved_filename = None
-            else:
-                # Expect a filename string
-                resolved_filename = str(filename)
-        except Exception:
-            resolved_filename = str(filename)
-
-        if not resolved_filename:
-            return None
-
-        file_path = UPLOADS_DIR / resolved_filename
-        if not file_path.exists():
-            return None
-
-        # page_number is expected to be 1-based in DB; convert to 0-based index
-        try:
-            if isinstance(page_number, Path):
-                page_number = int(page_number.name)
-            idx = int(page_number) - 1 if page_number is not None else 0
-        except Exception:
-            idx = 0
-
-        doc = fitz.open(str(file_path))
-        try:
-            if 0 <= idx < len(doc):
-                text = doc[idx].get_text()
-                return text.strip() if text else None
-        finally:
-            doc.close()
-    except Exception as e:
-        print('⚠️ Failed to extract page text for snippet:', e)
-    return None
-
-
-def build_snippet(preferred_text: Optional[str], fallback_title: Optional[str], filename: Optional[str] = None, page_number: Optional[int] = None, min_lines: int = 2, max_chars: int = 300) -> str:
-    """Construct a 2-3 line snippet for search results.
-    - preferred_text: section_text from DB (preferred)
-    - fallback_title: section title (heading)
-    - filename/page_number: used to extract page text if preferred_text is short
-    ``Returns`` a short snippet (<= max_chars) preferably containing 2 lines.
-    """
-    text = (preferred_text or '').strip()
-
-    # Ensure filename is a string and page_number is an int
-    try:
-        if filename is not None and not isinstance(filename, str):
-            filename = str(filename)
-        if page_number is not None and not isinstance(page_number, int):
-            page_number = int(page_number)
-    except Exception:
-        # If conversion fails, skip page text extraction
-        filename = None
-        page_number = None
-
-    # If section text is too short, try to pull page-level text from PDF
-    page_text = None
-    if (not text or len(text) < 60) and filename:
-        page_text = extract_page_text_from_pdf(filename, page_number)
-        # If we have page text and a fallback title, try to find the heading and extract the lines after it
-        if page_text:
-            try:
-                ft = (fallback_title or '').strip()
-                if ft:
-                    # Search lines to locate the heading line and capture the following non-empty lines
-                    all_lines = [ln for ln in page_text.splitlines()]
-                    found_snippet_lines = []
-                    for idx, ln in enumerate(all_lines):
-                        if ft.lower() in ln.lower():
-                            # Collect next few non-empty lines after the heading
-                            for next_ln in all_lines[idx+1: idx+1+ (min_lines * 3)]:
-                                if next_ln and next_ln.strip():
-                                    found_snippet_lines.append(next_ln.strip())
-                                if len(found_snippet_lines) >= min_lines:
-                                    break
-                            break
-
-                    if found_snippet_lines:
-                        # Use the lines after the heading as the snippet
-                        text = ' '.join(found_snippet_lines[:min_lines])
-                    else:
-                        # fallback to the whole page text if no heading-specific snippet found
-                        if len(page_text.strip()) > len(text):
-                            text = page_text.strip()
-            except Exception as e:
-                print('⚠️ Error while extracting heading-following snippet from page text:', e)
-                if page_text and len(page_text.strip()) > len(text):
-                    text = page_text.strip()
-
-    if not text:
-        text = (fallback_title or '').strip()
-
-    # Prefer returning 2-3 non-empty lines for context
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if lines:
-        if len(lines) >= min_lines + 1:
-            snippet = ' '.join(lines[: min_lines + 1 ])
-        else:
-            snippet = ' '.join(lines[: min_lines]) if len(lines) >= min_lines else ' '.join(lines)
-    else:
-        snippet = text
-
-    # Fallback to a character-limited snippet
-    if not snippet:
-        snippet = text[:max_chars]
-
-    if len(snippet) > max_chars:
-        snippet = snippet[:max_chars].rstrip() + '...'
-
-    return snippet
-
-
-def strip_intro_outro(text: str, remove_sentences: int = 1) -> str:
-    """Remove likely introductory or concluding sentences from text to focus semantic embeddings on core content.
-    This uses a simple heuristic: drop very short leading sentences or sentences containing common intro/executive words,
-    and drop trailing sentences that look like conclusions or references.
-    """
-    if not text:
-        return text
-    try:
-        # Split into sentences conservatively
-        sents = re.split(r'(?<=[\.\!\?])\s+', text.strip())
-        if len(sents) <= 2:
-            return text
-
-        # stronger heuristics
-        def looks_intro(s: str) -> bool:
-            sl = s.strip().lower()
-            intro_kw = ['introduction', 'abstract', 'overview', 'background', 'preface', 'table of contents', 'contents', 'about this', 'about the']
-            short = len(sl) < 60
-            phrase = any(k in sl for k in intro_kw)
-            starts_like = sl.startswith('in this') or sl.startswith('this chapter') or sl.startswith('this paper') or sl.startswith('we ') or sl.startswith('the aim')
-            # More aggressive: if sentence contains "introduction" as heading/title, remove it
-            heading_like = sl.startswith('introduction') or sl == 'introduction' or 'introduction:' in sl
-            return short or phrase or starts_like or heading_like
-
-        def looks_outro(s: str) -> bool:
-            sl = s.strip().lower()
-            outro_kw = ['conclusion', 'conclusions', 'in conclusion', 'summary', 'references', 'acknowledg', 'further work', 'future work', 'thanks', 'thank you']
-            short = len(sl) < 60
-            phrase = any(k in sl for k in outro_kw)
-            # More aggressive: if sentence contains "conclusion" as heading/title, remove it
-            heading_like = sl.startswith('conclusion') or sl == 'conclusion' or 'conclusion:' in sl or sl.startswith('conclusions')
-            return short or phrase or heading_like
-
-        start = 0
-        end = len(sents)
-        # aggressively remove up to N leading intro-like sentences
-        max_leading = 3
-        leading = 0
-        while leading < max_leading and start < end and looks_intro(sents[start]):
-            start += 1
-            leading += 1
-
-        # aggressively remove up to N trailing outro-like sentences
-        max_trailing = 3
-        trailing = 0
-        while trailing < max_trailing and end - 1 >= start and looks_outro(sents[end - 1]):
-            end -= 1
-            trailing += 1
-
-        # If we removed almost everything, fall back to original conservative behavior
-        if end - start <= 1:
-            # try to keep the longest middle sentence instead of empty
-            mid = max(sents, key=lambda s: len(s))
-            return mid.strip()
-
-        trimmed = ' '.join(sents[start:end]).strip()
-
-        # Remove obvious boilerplate lines inside the text
-        boilerplate_patterns = ['table of contents', 'references', 'acknowledgements', 'copyright', 'all rights reserved']
-        lowered = trimmed.lower()
-        for bp in boilerplate_patterns:
-            if bp in lowered:
-                # drop everything from the pattern onwards
-                idx = lowered.find(bp)
-                trimmed = trimmed[:idx].strip()
-                break
-
-        return trimmed if trimmed else text
-    except Exception:
-        return text
-
 try:
     import google.generativeai as genai
     LLM_AVAILABLE = True
@@ -345,8 +130,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global configurations (resolved relative to backend folder)
-DATA_DIR = BASE_DIR / "data"
+# Global configurations
+DATA_DIR = Path("data")
 UPLOADS_DIR = DATA_DIR / "uploads"
 PROCESSED_DIR = DATA_DIR / "processed"
 AUDIO_DIR = DATA_DIR / "audio"
@@ -431,11 +216,8 @@ def init_vector_search():
     # Set global model to the sentence-transformers instance used for embeddings
     model = emb_model
 
-    # Prepare index storage path (resolve relative paths against backend folder)
-    faiss_store_env = os.getenv('FAISS_INDEX_PATH', './data/embeddings')
-    faiss_store = Path(faiss_store_env)
-    if not faiss_store.is_absolute():
-        faiss_store = (BASE_DIR / faiss_store).resolve()
+    # Prepare index storage path
+    faiss_store = Path(os.getenv('FAISS_INDEX_PATH', './data/embeddings'))
     faiss_store.mkdir(parents=True, exist_ok=True)
     index_file = faiss_store / 'faiss.index'
 
@@ -449,14 +231,14 @@ def init_vector_search():
                 faiss_index = faiss.read_index(str(index_file))
                 print(f"✅ Loaded FAISS index from {index_file}")
             except Exception as e:
-                print(f"⚠️ Failed to read existing FAISS index: {e}. Creating new IndexIDMap-backed index.")
-                # create fresh IndexIDMap-backed index
-                base = faiss.IndexFlatIP(EMBEDDING_DIM)
-                faiss_index = faiss.IndexIDMap(base)
+                print(f"⚠️ Failed to read existing FAISS index: {e}. Creating new index.")
+                # create fresh
+                quant = faiss.IndexFlatIP(EMBEDDING_DIM)
+                faiss_index = faiss.IndexIDMap(quant)
         else:
-            base = faiss.IndexFlatIP(EMBEDDING_DIM)
-            faiss_index = faiss.IndexIDMap(base)
-            print(f"✅ Created new FAISS IndexIDMap index (dim={EMBEDDING_DIM})")
+            quant = faiss.IndexFlatIP(EMBEDDING_DIM)
+            faiss_index = faiss.IndexIDMap(quant)
+            print(f"✅ Created new FAISS index (dim={EMBEDDING_DIM})")
 
         VECTOR_AVAILABLE = True
         return True
@@ -613,64 +395,6 @@ async def upload_documents(
         "files": uploaded_files
     }
 
-
-@app.post("/qa")
-async def qa_endpoint(request: Request):
-    """
-    Answer user questions about a document using Gemini LLM.
-    """
-    if not LLM_AVAILABLE:
-        return {"answer": "Gemini LLM is not available. Please check your API key and setup."}
-
-    body = await request.json()
-    print("Received /qa request:", body)
-    question = body.get("question", "")
-    document_id = body.get("document_id")
-
-    # Fetch document context (sections) if document_id is provided
-    context_text = ""
-    if document_id:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM documents WHERE filename = ?", (document_id,))
-        doc_row = cursor.fetchone()
-        if doc_row:
-            doc_id = doc_row[0]
-            cursor.execute("SELECT section_title, section_text FROM sections WHERE document_id = ? ORDER BY page_number, id LIMIT 10", (doc_id,))
-            sections = cursor.fetchall()
-            for title, text in sections:
-                context_text += f"Section: {title}\n{text}\n---\n"
-        conn.close()
-
-    # Build prompt for Gemini
-    if context_text:
-        prompt = f"""
-        You are an academic research assistant. Answer the user's question using the provided document context below. If the answer is not present, you may use your own knowledge to help the user.
-
-        Document Context:
-        {context_text}
-
-        User Question: {question}
-        """
-    else:
-        prompt = f"""
-        You are an academic research assistant. Answer the user's question as helpfully as possible. If document context is provided, use it. Otherwise, answer from your own knowledge.
-
-        User Question: {question}
-        """
-
-    try:
-        model_gemini = genai.GenerativeModel('gemini-1.5-flash')
-        response = model_gemini.generate_content(prompt)
-        print("Gemini response:", response.text)
-        answer = response.text.strip()
-    except Exception as e:
-        import traceback
-        print("Gemini API error in /qa endpoint:", traceback.format_exc())
-        answer = f"Error generating answer: {str(e)}"
-
-    return {"answer": answer}
-
 async def process_document(file_path: Path, document_id: int):
     """
     Background task to process uploaded PDF and extract sections.
@@ -768,12 +492,7 @@ async def process_document(file_path: Path, document_id: int):
 
                 # Persist index to disk
                 try:
-                    # Resolve faiss_store the same way as init_vector_search
-                    faiss_store_env = os.getenv('FAISS_INDEX_PATH', './data/embeddings')
-                    faiss_store = Path(faiss_store_env)
-                    if not faiss_store.is_absolute():
-                        faiss_store = (BASE_DIR / faiss_store).resolve()
-                    faiss_store.mkdir(parents=True, exist_ok=True)
+                    faiss_store = Path(os.getenv('FAISS_INDEX_PATH', './data/embeddings'))
                     index_file = faiss_store / 'faiss.index'
                     faiss.write_index(faiss_index, str(index_file))
                     print(f"✅ Persisted FAISS index to {index_file}")
@@ -913,139 +632,24 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
         # Encode query
         query_vec = model.encode([request.selected_text], convert_to_numpy=True)
         # Normalize for cosine similarity via inner product
-        try:
-            faiss.normalize_L2(query_vec)
-        except Exception:
-            # fallback normalization
-            qnorm = np.linalg.norm(query_vec, axis=1, keepdims=True)
-            qnorm[qnorm == 0] = 1.0
-            query_vec = query_vec / qnorm
+        faiss.normalize_L2(query_vec)
 
         k = min(max(request.max_results or 8, 1), 50)
         distances, ids = faiss_index.search(query_vec.astype('float32'), k)
 
         results = []
-
-        # Build list of candidate ids in the same order as ids[0] (skip -1)
-        candidate_pos = [pos for pos, raw in enumerate(ids[0]) if raw != -1]
-        candidate_ids = [int(ids[0][pos]) for pos in candidate_pos]
-        if not candidate_ids:
+        found_ids = [int(i) for i in ids[0] if i != -1]
+        if not found_ids:
             return []
 
         # Fetch matching sections from DB by id
-        placeholders = ','.join('?' for _ in candidate_ids)
-        cursor.execute(f"SELECT id, section_title, section_text, page_number, document_id FROM sections WHERE id IN ({placeholders})", tuple(candidate_ids))
+        placeholders = ','.join('?' for _ in found_ids)
+        cursor.execute(f"SELECT id, section_title, section_text, page_number, document_id FROM sections WHERE id IN ({placeholders})", tuple(found_ids))
         rows = cursor.fetchall()
+
+        # Map id->row
         row_map = {r[0]: r for r in rows}
 
-        # Prepare texts in the same order for MiniLM scoring if available.
-        # Augment each section with page-level text and neighboring sections to give MiniLM more context.
-        candidate_texts = []
-        candidate_rows = []
-        # Collect document ids for candidates so we can load neighboring sections in bulk
-        doc_ids = set()
-        for cid in candidate_ids:
-            row = row_map.get(cid)
-            if row:
-                doc_ids.add(row[4])
-
-        # Load all sections for these documents to find neighbors
-        neighbors_map = {}
-        try:
-            if doc_ids:
-                placeholders = ','.join('?' for _ in doc_ids)
-                cursor.execute(f"SELECT id, document_id, section_title, section_text, page_number FROM sections WHERE document_id IN ({placeholders}) ORDER BY document_id, page_number, id", tuple(doc_ids))
-                all_doc_sections = cursor.fetchall()
-                # build mapping: document_id -> ordered list of sections
-                cur_map = {}
-                for r in all_doc_sections:
-                    did = r[1]
-                    cur_map.setdefault(did, []).append(r)
-                neighbors_map = cur_map
-        except Exception:
-            neighbors_map = {}
-
-        for cid in candidate_ids:
-            row = row_map.get(cid)
-            if not row:
-                candidate_rows.append(None)
-                candidate_texts.append("")
-                continue
-            candidate_rows.append(row)
-
-            # Base text: section text or title
-            base_text = row[2] or row[1] or ""
-
-            # Page-level context (if available)
-            page_ctx = ""
-            try:
-                # row[4] is document_id; need filename for extract_page_text_from_pdf
-                cursor.execute("SELECT filename FROM documents WHERE id = ?", (row[4],))
-                doc_row = cursor.fetchone()
-                doc_name = doc_row[0] if doc_row else None
-                if doc_name and row[3]:
-                    page_ctx = extract_page_text_from_pdf(doc_name, row[3]) or ""
-            except Exception:
-                page_ctx = ""
-
-            # Neighboring sections (previous + next) from the same document
-            neighbor_ctx = ""
-            try:
-                doc_sections = neighbors_map.get(row[4], [])
-                # find index
-                idx_in_doc = None
-                for i, s in enumerate(doc_sections):
-                    if s[0] == row[0]:
-                        idx_in_doc = i
-                        break
-                if idx_in_doc is not None:
-                    # previous
-                    if idx_in_doc - 1 >= 0:
-                        prev = doc_sections[idx_in_doc - 1]
-                        neighbor_ctx += (prev[3] or prev[2] or '') + '\n'
-                    # next
-                    if idx_in_doc + 1 < len(doc_sections):
-                        nxt = doc_sections[idx_in_doc + 1]
-                        neighbor_ctx += (nxt[3] or nxt[2] or '')
-            except Exception:
-                neighbor_ctx = ""
-
-            combined = base_text
-            if page_ctx:
-                combined = combined + '\n\n' + page_ctx
-            if neighbor_ctx:
-                combined = combined + '\n\n' + neighbor_ctx
-
-            candidate_texts.append(combined)
-
-        # Compute MiniLM similarities for candidates in batch if available
-        minilm_sims = None
-        try:
-            if SENTENCE_TRANSFORMER_AVAILABLE:
-                emb_model = load_minilm_model()
-                if emb_model is not None:
-                    q_emb = emb_model.encode([request.selected_text], convert_to_numpy=True)
-                    # strip intro/outro to focus embeddings on core content
-                    cleaned_texts = [strip_intro_outro(t) for t in candidate_texts]
-                    sec_embs = emb_model.encode(cleaned_texts, convert_to_numpy=True)
-                    # normalize
-                    sec_norms = np.linalg.norm(sec_embs, axis=1, keepdims=True)
-                    sec_norms[sec_norms == 0] = 1.0
-                    sec_embs = sec_embs / sec_norms
-                    q_norm = np.linalg.norm(q_emb)
-                    if q_norm == 0:
-                        q_norm = 1.0
-                    q_emb = q_emb / q_norm
-                    # cosine similarities
-                    try:
-                        minilm_sims = cosine_similarity(q_emb, sec_embs)[0].tolist()
-                    except Exception:
-                        minilm_sims = (sec_embs @ q_emb.reshape(-1,)).tolist()
-        except Exception as e:
-            print(f"⚠️ Error computing MiniLM sims for FAISS candidates: {e}")
-
-        # Iterate in original ids order and compute combined score using MiniLM (heavy) + FAISS + title boost
-        ml_index = 0
         for idx, raw_id in enumerate(ids[0]):
             if raw_id == -1:
                 continue
@@ -1053,109 +657,37 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
             row = row_map.get(sid)
             if not row:
                 continue
+            # Compute similarity score from distances (inner product on normalized vectors)
+            sim = float(distances[0][idx])
 
-            # FAISS similarity at this position
-            faiss_sim = float(distances[0][idx])
-
-            # Document filename
+            # Get document filename
             cursor.execute("SELECT filename FROM documents WHERE id = ?", (row[4],))
             doc_row = cursor.fetchone()
             doc_name = doc_row[0] if doc_row else 'Unknown'
 
-            full_text = row[2] or ''
-            snippet = build_snippet(full_text, row[1], filename=doc_name, page_number=row[3])
-            highlight_candidate = (full_text.strip() if full_text else row[1] or request.selected_text)
+            full_text = row[2] or row[1] or ''
+            snippet = full_text[:300] + '...' if len(full_text) > 300 else full_text
 
-            # MiniLM similarity for this candidate (if computed)
-            minilm_sim = 0.0
-            try:
-                if minilm_sims is not None and ml_index < len(minilm_sims):
-                    minilm_sim = float(minilm_sims[ml_index])
-            except Exception:
-                minilm_sim = 0.0
-
-            # Title boost/penalty: boost relevant terms, penalize intro/conclusion headings
-            title = (row[1] or '').lower()
-            title_adjustment = 0.0
-            try:
-                q_words = set([w.strip() for w in re.split(r"\W+", request.selected_text.lower()) if w.strip()])
-                title_words = set([w.strip() for w in re.split(r"\W+", title) if w.strip()])
-                
-                # Check for intro/conclusion headings and penalize them
-                intro_conclusion_terms = ['introduction', 'conclusion', 'conclusions', 'abstract', 'summary']
-                if any(term in title for term in intro_conclusion_terms):
-                    title_adjustment = -0.15  # Penalize intro/conclusion sections
-                elif q_words and len(q_words & title_words) > 0:
-                    title_adjustment = 0.10  # Boost relevant terms
-            except Exception:
-                title_adjustment = 0.0
-
-            # Normalize faiss sim
-            try:
-                faiss_sim_norm = max(0.0, min(1.0, float(faiss_sim)))
-            except Exception:
-                faiss_sim_norm = 0.0
-
-            # Combine signals with higher weight for MiniLM
-            combined_score = (0.55 * minilm_sim) + (0.35 * faiss_sim_norm) + title_adjustment
-
-            # Apply threshold
-            threshold = float(request.similarity_threshold or 0.0)
-            if combined_score < threshold:
-                ml_index += 1
-                continue
-
+            # Use the actual section content for highlighting instead of selected text
+            # This gives a much better chance of finding the text in the PDF
+            highlight_candidate = full_text.strip() if full_text else request.selected_text
+            
             results.append(SearchResult(
                 document_name=doc_name,
                 section_title=row[1] or 'Untitled',
                 snippet=snippet,
                 page_number=row[3] or 1,
-                similarity_score=combined_score,
+                similarity_score=sim,
                 highlight_text=highlight_candidate
             ))
-            ml_index += 1
 
         # Sort and return top-k
         results.sort(key=lambda x: x.similarity_score, reverse=True)
         final = results[: (request.max_results or 8) ]
 
-        # If MiniLM is available, and we have fewer than requested results from FAISS,
-        # supplement with MiniLM semantic search to improve recall (cross-document).
-        try:
-            if SENTENCE_TRANSFORMER_AVAILABLE and len(final) < (request.max_results or 8):
-                remaining = (request.max_results or 8) - len(final)
-                # Fetch all sections for MiniLM semantic search
-                cursor.execute("""
-                    SELECT s.id, s.section_title, s.section_text, s.page_number, d.filename, d.title
-                    FROM sections s
-                    JOIN documents d ON s.document_id = d.id
-                    WHERE d.processing_status = 'completed'
-                    ORDER BY s.id
-                """)
-                all_sections = cursor.fetchall()
-                ml_results = await minilm_semantic_search(request, all_sections)
-
-                # Dedupe by section (use document_name+section_title or highlight_text) -- prefer section id mapping
-                existing_ids = set()
-                for r in final:
-                    # We can try to map by snippet and title if id not present; best-effort
-                    existing_ids.add((r.document_name, r.section_title))
-
-                for mr in ml_results:
-                    if remaining <= 0:
-                        break
-                    key = (mr.document_name, mr.section_title)
-                    if key in existing_ids:
-                        continue
-                    final.append(mr)
-                    existing_ids.add(key)
-                    remaining -= 1
-        except Exception as e:
-            print(f"⚠️ Error while supplementing FAISS results with MiniLM: {e}")
-
         search_time = (datetime.now() - start_time).total_seconds()
         cursor.execute("UPDATE search_history SET results_count = ?, search_time = CURRENT_TIMESTAMP WHERE id = ?", (len(final), search_id))
-        print(f"🔍 FAISS vector search completed in {search_time:.3f}s -> {len(final)} results (after supplement)")
+        print(f"🔍 FAISS vector search completed in {search_time:.3f}s -> {len(final)} results")
         return final
 
     except Exception as e:
@@ -1222,7 +754,6 @@ async def minilm_semantic_search(request: SearchRequest, all_sections):
         
         for section in all_sections:
             section_text = section[2] or section[1] or ""
-            section_text = strip_intro_outro(section_text)
             if len(section_text.strip()) > 10:  # Only process sections with meaningful content
                 section_texts.append(section_text)
                 valid_sections.append(section)
@@ -1240,11 +771,11 @@ async def minilm_semantic_search(request: SearchRequest, all_sections):
         for i, (section, similarity) in enumerate(zip(valid_sections, similarities)):
             # Set a reasonable threshold for semantic similarity
             if similarity > 0.15:  # MiniLM threshold
-                full_text = section[2] or ''
-                snippet = build_snippet(full_text, section[1], filename=section[4], page_number=section[3])
-
+                full_text = section[2] or section[1]
+                snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
+                
                 # Use actual section content for better highlighting
-                highlight_candidate = (full_text.strip() if full_text else section[1] or request.selected_text)
+                highlight_candidate = full_text.strip() if full_text else request.selected_text
                 
                 results.append(SearchResult(
                     document_name=section[4],
@@ -1292,11 +823,11 @@ async def basic_keyword_search(request: SearchRequest, all_sections):
         
         # Only include results with reasonable similarity
         if similarity > 0.1:  # Lower threshold for basic text search
-            full_text = section[2] or ''
-            snippet = build_snippet(full_text, section[1], filename=section[4], page_number=section[3])
-
+            full_text = section[2] or section[1]
+            snippet = full_text[:300] + "..." if len(full_text) > 300 else full_text
+            
             # Use actual section content for better highlighting
-            highlight_candidate = (full_text.strip() if full_text else section[1] or request.selected_text)
+            highlight_candidate = full_text.strip() if full_text else request.selected_text
             
             results.append(SearchResult(
                 document_name=section[4],
@@ -1486,15 +1017,28 @@ async def generate_insights(request: InsightsRequest):
 
 @app.post("/audio")
 async def generate_audio(request: AudioRequest):
+    """
+    Generate engaging podcast-style audio overview.
+    Two speakers discuss the selected content and insights in a natural, dynamic way.
+    Content is grounded in the user's document library for trust and accuracy.
+    """
+    if not TTS_AVAILABLE:
+        return {
+            "script": "Audio generation not available - TTS services not configured.",
+            "audio_files": [],
+            "message": "Text-to-speech not available"
+        }
     
-
-        audio_files = []
+    try:
+        # Enhanced script generation using comprehensive insights
         if LLM_AVAILABLE:
+            # Prepare comprehensive context
             insights_context = ""
             if request.insights:
                 for insight_type, content in request.insights.items():
                     if content and not content.startswith("Error") and insight_type != "status":
                         insights_context += f"\n{insight_type.title()} Insights: {content}\n"
+            
             related_content = []
             for section in request.related_sections:
                 related_content.append({
@@ -1503,19 +1047,21 @@ async def generate_audio(request: AudioRequest):
                     "content": section.get('snippet', ''),
                     "relevance": section.get('similarity_score', 0)
                 })
+            
+            # Enhanced script prompt for engaging podcast content
             script_prompt = f"""
             Create an engaging, natural podcast conversation between two AI hosts discussing academic/research content.
             Make it sound like a dynamic conversation between knowledgeable researchers, not robotic.
-
+            
             CONTENT TO DISCUSS:
             Selected Text: "{request.selected_text}"
-
+            
             AI-Generated Insights:
             {insights_context}
-
+            
             Related Documents from User's Library:
             {json.dumps(related_content, indent=2)}
-
+            
             REQUIREMENTS:
             - 3-5 minutes of natural conversation when spoken
             - Two distinct voices: Host A (curious, asks questions) and Expert B (knowledgeable, provides insights)
@@ -1524,7 +1070,7 @@ async def generate_audio(request: AudioRequest):
             - Make it engaging and easy to follow
             - Include natural conversational elements (transitions, emphasis, pauses)
             - Ground everything in the provided documents - no external knowledge
-
+            
             STRUCTURE:
             1. Host A introduces the topic based on selected text
             2. Expert B explains the key concept
@@ -1532,44 +1078,57 @@ async def generate_audio(request: AudioRequest):
             4. Exploration of different perspectives or contradictions
             5. Practical implications and examples
             6. Wrap-up with key takeaways
-
+            
             FORMAT: "Speaker A: [text]" and "Speaker B: [text]"
-
+            
             Make it sound like two real people having an intelligent, enthusiastic discussion about the research!
             """
-            import google.generativeai as genai
+            
             model_gemini = genai.GenerativeModel('gemini-1.5-flash')
             response = model_gemini.generate_content(script_prompt)
             script = response.text.strip()
         else:
-            insight_text = (
-                f"Looking at your insights, we see {', '.join([k for k in request.insights.keys() if k != 'status'])} themes emerging."
-                if request.insights else
-                "The semantic analysis reveals interesting thematic connections across your documents."
-            )
-            script = (
-                f"Speaker A: Welcome to your personalized research insight podcast! Today we're diving deep into a fascinating topic from your document library.\n"
-                f"Speaker B: That's right! We're exploring \"{request.selected_text[:100]}...\" and I have to say, the connections we found across your documents are really intriguing.\n"
-                "Speaker A: Tell us more about what you discovered.\n"
-                f"Speaker B: Well, we analyzed {len(request.related_sections)} related sections from your personal research collection, and there are some compelling patterns emerging.\n"
-                "Speaker A: What kind of patterns are we talking about?\n"
-                f"Speaker B: {insight_text}\n"
-                "Speaker A: That's fascinating. How does this connect to the broader research landscape you've been building?\n"
-                "Speaker B: What's particularly interesting is that this isn't just theoretical - your document collection shows practical applications and real-world implementations that bridge different research areas.\n"
-                "Speaker A: For our listeners who want to explore this further, where should they look next in their document collection?\n"
-                "Speaker B: I'd recommend diving deeper into the related sections we identified - they offer complementary perspectives that could spark new research directions or validate current approaches.\n"
-                "Speaker A: Excellent insights! Thanks for this deep dive into your personalized research connections.\n"
-            )
+            # Enhanced fallback script
+            script = f"""
+            Speaker A: Welcome to your personalized research insight podcast! Today we're diving deep into a fascinating topic from your document library.
+
+            Speaker B: That's right! We're exploring "{request.selected_text[:100]}..." and I have to say, the connections we found across your documents are really intriguing.
+
+            Speaker A: Tell us more about what you discovered.
+
+            Speaker B: Well, we analyzed {len(request.related_sections)} related sections from your personal research collection, and there are some compelling patterns emerging.
+
+            Speaker A: What kind of patterns are we talking about?
+
+            Speaker B: {f"Looking at your insights, we see {', '.join([k for k in request.insights.keys() if k != 'status'])} themes emerging." if request.insights else "The semantic analysis reveals interesting thematic connections across your documents."}
+
+            Speaker A: That's fascinating. How does this connect to the broader research landscape you've been building?
+
+            Speaker B: What's particularly interesting is that this isn't just theoretical - your document collection shows practical applications and real-world implementations that bridge different research areas.
+
+            Speaker A: For our listeners who want to explore this further, where should they look next in their document collection?
+
+            Speaker B: I'd recommend diving deeper into the related sections we identified - they offer complementary perspectives that could spark new research directions or validate current approaches.
+
+            Speaker A: Excellent insights! Thanks for this deep dive into your personalized research connections.
+            """
+        
+        # Parse script and generate audio with different voices
         audio_files = []
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Combine the script into a single SSML payload alternating two distinct voices
+        # to produce a 2-3 minute podcast. This avoids generating many small files and
+        # keeps Azure usage low for free accounts.
         speech_key = os.getenv("AZURE_SPEECH_KEY")
         speech_region = os.getenv("AZURE_SPEECH_REGION")
-        total_duration = 0
+
         if not (speech_key and speech_region):
             print("Azure Speech credentials not found. Audio files not generated.")
         else:
             try:
                 # Build alternating SSML using two voices
+                # Normalize script into speaker segments
                 segments = []
                 for raw in script.split('\n'):
                     if not raw.strip():
@@ -1579,47 +1138,54 @@ async def generate_audio(request: AudioRequest):
                     elif raw.startswith('Speaker B:') or raw.startswith('Expert B:'):
                         segments.append(('B', raw.split(':', 1)[1].strip()))
                     else:
+                        # If not labeled, append to last speaker if present, else A
                         if segments:
                             segments[-1] = (segments[-1][0], segments[-1][1] + ' ' + raw.strip())
                         else:
                             segments.append(('A', raw.strip()))
-                # Build SSML with alternating voices for each segment
-                full_text = ' '.join([t for _, t in segments])
-                ssml_parts = [
-                    '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US">'
-                ]
-                for speaker, text in segments:
-                    if speaker == 'A':
-                        voice = 'en-US-AvaMultilingualNeural'
-                        style = 'cheerful'
-                        role = 'YoungAdultFemale'
+
+                # Merge successive same-speaker segments to reduce switches
+                merged = []
+                for s, t in segments:
+                    if merged and merged[-1][0] == s:
+                        merged[-1] = (s, merged[-1][1] + ' ' + t)
                     else:
-                        voice = 'en-US-AndrewMultilingualNeural'
-                        style = 'calm'
-                        role = 'YoungAdultMale'
+                        merged.append((s, t))
+
+                # Estimate total duration and truncate if needed (target 150s default)
+                full_text = ' '.join([t for _, t in merged])
+                est_secs = max(1, len(full_text) / 12)
+                target_secs = 150  # ~2.5 minutes
+                if est_secs > target_secs:
+                    # truncate merged segments to fit target length
+                    allowed_chars = int(target_secs * 12)
+                    truncated = full_text[:allowed_chars]
+                    # Rebuild segments from truncated text as a single block
+                    merged = [('A', truncated)]
+
+                # Build SSML with alternating voices
+                ssml_parts = ['<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">']
+                for speaker, text in merged:
+                    voice = 'en-US-JennyNeural' if speaker == 'A' else 'en-US-RyanNeural'
+                    # Escape any problematic characters
                     safe_text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                    ssml_parts.append(
-                        f'<voice name="{voice}">' 
-                        f'<mstts:express-as style="{style}" role="{role}">' 
-                        f'<prosody rate="0.95" pitch="+1%">{safe_text}</prosody>' 
-                        f'</mstts:express-as></voice>'
-                    )
+                    ssml_parts.append(f'<voice name="{voice}"><prosody rate="0.95" pitch="+1%">{safe_text}</prosody></voice>')
                 ssml_parts.append('</speak>')
                 ssml_text = ''.join(ssml_parts)
-                print("\n--- SSML to be synthesized ---\n")
-                print(ssml_text)
-                print("\n--- End SSML ---\n")
+
+                # Prepare single output file
                 filename = f"podcast_{timestamp}.wav"
                 audio_path = AUDIO_DIR / filename
-                import azure.cognitiveservices.speech as speechsdk
+
                 speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
+                speech_config.speech_synthesis_voice_name = 'en-US-JennyNeural'
+                # Use WAV output for browser-friendly playback
                 audio_config = speechsdk.audio.AudioOutputConfig(filename=str(audio_path))
                 synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+
                 result = synthesizer.speak_ssml_async(ssml_text).get()
-                print("Audio file saved to:", audio_path)
-                print("Azure TTS result reason:", result.reason)
                 if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-                    duration_est = max(1, int(len(full_text) / 12))
+                    duration_est = max(1, int(len(' '.join([t for _, t in merged])) / 12))
                     audio_files.append({
                         'speaker': 'A+B',
                         'filename': filename,
@@ -1627,11 +1193,15 @@ async def generate_audio(request: AudioRequest):
                         'duration_estimate': duration_est,
                         'segment_order': 1
                     })
-                    total_duration = duration_est
                 else:
                     print('Speech synthesis failed:', result.reason)
+
             except Exception as e:
                 print('TTS error while generating combined podcast:', e)
+        
+        # Calculate total estimated duration
+        total_duration = sum(file.get("duration_estimate", 0) for file in audio_files)
+        
         return {
             "script": script,
             "audio_files": audio_files,
@@ -1645,13 +1215,13 @@ async def generate_audio(request: AudioRequest):
             }
         }
         
-    # except Exception as e:
-    #     return {
-    #         "script": f"Error generating podcast script: {str(e)}",
-    #         "audio_files": [],
-    #         "error": str(e),
-    #         "fallback_message": "Audio generation encountered an error. Please try again."
-    #     }
+    except Exception as e:
+        return {
+            "script": f"Error generating podcast script: {str(e)}",
+            "audio_files": [],
+            "error": str(e),
+            "fallback_message": "Audio generation encountered an error. Please try again."
+        }
 
 @app.get("/audio/{filename}")
 async def get_audio_file(filename: str):
@@ -1731,27 +1301,6 @@ async def get_system_stats():
             "audio_generation": TTS_AVAILABLE
         }
     }
-
-
-@app.post("/reload_index")
-async def reload_faiss_index():
-    """Reload FAISS index from disk. Returns index stats or error."""
-    global faiss_index, VECTOR_AVAILABLE
-    try:
-        import faiss
-        faiss_store_env = os.getenv('FAISS_INDEX_PATH', './data/embeddings')
-        faiss_store = Path(faiss_store_env)
-        if not faiss_store.is_absolute():
-            faiss_store = (BASE_DIR / faiss_store).resolve()
-        index_file = faiss_store / 'faiss.index'
-        if not index_file.exists():
-            return {"ok": False, "error": f"Index file not found at {index_file}"}
-
-        faiss_index = faiss.read_index(str(index_file))
-        VECTOR_AVAILABLE = True
-        return {"ok": True, "total_vectors": faiss_index.ntotal}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
 
 # Serve the React frontend (if built)
 frontend_path = Path(__file__).parent.parent / "build"

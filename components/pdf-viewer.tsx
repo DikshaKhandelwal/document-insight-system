@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Upload, FileText, Search, Download, ZoomIn, ZoomOut, RotateCw, AlertCircle, CheckCircle } from "lucide-react"
+import { Upload, FileText, Search, ZoomIn, ZoomOut, RotateCw, AlertCircle, CheckCircle } from "lucide-react"
 
 interface PDFViewerProps {
   onTextSelection: (text: string) => void
@@ -805,29 +805,7 @@ To use this system effectively, simply select any text in this document and watc
         {/* Header Controls */}
         <div className="flex items-center justify-between p-4 border-b border-slate-200 bg-slate-50">
           <div className="flex items-center gap-4">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf"
-              onChange={handleFileUpload}
-              className="hidden"
-            />
             
-            <Button
-              onClick={() => fileInputRef.current?.click()}
-              variant="outline"
-              size="sm"
-              disabled={isUploading || isLoading}
-            >
-              <Upload className="w-4 h-4 mr-2" />
-              {isUploading ? 'Uploading...' : 'Upload PDF'}
-            </Button>
-
-            <Badge variant={apiStatus === 'ready' ? 'default' : 'secondary'} className="text-xs">
-              <FileText className="w-3 h-3 mr-1" />
-              {apiStatus === 'ready' ? 'Adobe PDF Embed' : 'Loading...'}
-            </Badge>
-
             {documentInfo && (
               <Badge variant="outline" className="text-xs">
                 {documentInfo.numPages} pages
@@ -836,9 +814,6 @@ To use this system effectively, simply select any text in this document and watc
           </div>
 
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={!loadedPdfUrl}>
-              <Download className="w-4 h-4" />
-            </Button>
           </div>
         </div>
 
@@ -935,28 +910,6 @@ To use this system effectively, simply select any text in this document and watc
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-slate-200 bg-slate-50">
         <div className="flex items-center gap-4">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf"
-            onChange={handleFileUpload}
-            className="hidden"
-          />
-          
-          <Button
-            onClick={() => fileInputRef.current?.click()}
-            variant="outline"
-            size="sm"
-            disabled={isUploading}
-          >
-            <Upload className="w-4 h-4 mr-2" />
-            Upload PDF
-          </Button>
-
-          <Badge variant="secondary" className="text-xs">
-            <FileText className="w-3 h-3 mr-1" />
-            Demo Mode
-          </Badge>
         </div>
 
         <div className="flex items-center gap-2">
