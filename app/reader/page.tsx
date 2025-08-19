@@ -13,6 +13,7 @@ import Link from "next/link"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import PDFViewer from "@/components/pdf-viewer"
 import AudioPlayer from "@/components/audio-player"
+import AIDebate from "@/components/ai-debate"
 import Chatbot from "@/components/chatbot"
 
 interface SearchResult {
@@ -899,12 +900,13 @@ export default function ReaderPage() {
         <div className="flex-1 overflow-hidden">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
             <div className="border-b border-slate-200 mx-2 mt-2">
-              <TabsList className="grid w-full grid-cols-5 h-8 bg-orange-50/40">
-                <TabsTrigger value="related" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Related</TabsTrigger>
-                <TabsTrigger value="overlapping" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Overlap</TabsTrigger>
-                <TabsTrigger value="contradicting" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Contrast</TabsTrigger>
-                <TabsTrigger value="examples" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Examples</TabsTrigger>
-                <TabsTrigger value="insights" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Insights</TabsTrigger>
+              <TabsList className="grid w-full grid-cols-6 h-8 bg-orange-50/40">
+                <TabsTrigger value="related" className="text-[9px] px-0.5 h-7 data-[state=active]:bg-white">Related</TabsTrigger>
+                <TabsTrigger value="overlapping" className="text-[9px] px-0.5 h-7 data-[state=active]:bg-white">Overlap</TabsTrigger>
+                <TabsTrigger value="contradicting" className="text-[9px] px-0.5 h-7 data-[state=active]:bg-white">Contrast</TabsTrigger>
+                <TabsTrigger value="examples" className="text-[9px] px-0.5 h-7 data-[state=active]:bg-white">Examples</TabsTrigger>
+                <TabsTrigger value="insights" className="text-[9px] px-0.5 h-7 data-[state=active]:bg-white">Insights</TabsTrigger>
+                <TabsTrigger value="debate" className="text-[9px] px-0.5 h-7 data-[state=active]:bg-white bg-gradient-to-r from-purple-100 to-pink-100">Debate</TabsTrigger>
               </TabsList>
             </div>
 
@@ -1340,6 +1342,33 @@ export default function ReaderPage() {
                       </Button>
                     </div>
                   )}
+                </TabsContent>
+
+                {/* AI Debate Tab - EXCLUSIVE FEATURE */}
+                <TabsContent value="debate" className="space-y-3 mt-0">
+                  <div className="space-y-3">
+                    <div className="bg-gradient-to-r from-purple-50 to-pink-50 p-2 rounded border border-purple-200">
+                      <div className="flex items-center gap-2 mb-1">
+                        <h3 className="font-medium text-xs">AI Expert Debate</h3>
+                        <Badge className="bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs px-1">
+                          EXCLUSIVE
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Three AI personalities debate your research from different perspectives
+                      </p>
+                    </div>
+                    
+                    <div className="max-h-[400px] overflow-y-auto">
+                      <AIDebate 
+                        selectedText={selectedText}
+                        relatedSections={searchResults}
+                        onDebateGenerated={(result) => {
+                          console.log('Debate generated:', result)
+                        }}
+                      />
+                    </div>
+                  </div>
                 </TabsContent>
               </ScrollArea>
             </div>

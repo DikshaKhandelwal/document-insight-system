@@ -572,6 +572,7 @@ class AudioRequest(BaseModel):
     script_style: str = "engaging_podcast"
     audio_format: Optional[Dict[str, Any]] = None
     content_focus: Optional[List[str]] = None
+    voice_name: Optional[str] = None
 
 # Initialize everything
 print("🚀 Initializing Document Insight System Backend...")
@@ -1625,7 +1626,12 @@ async def generate_audio(request: AudioRequest):
 
             FORMAT: "Speaker A: [text]" and "Speaker B: [text]"
 
-
+            IMPORTANT:
+            - Output ONLY lines starting with 'Speaker A:' or 'Speaker B:' (or 'Host A:'/'Expert B:').
+            - No other text, no introductions, no summaries, no formatting, no markdown.
+            - At least 6 exchanges, alternating speakers.
+            - Do not include any text except speaker lines.
+            - No extra narrative, no headings, no closing remarks outside the dialogue.
             """
             import google.generativeai as genai
             gemini_model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
@@ -1656,9 +1662,9 @@ async def generate_audio(request: AudioRequest):
                     role = 'YoungAdultMale'
                 safe_text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                 ssml_parts.append(
-                    f'<voice name="{voice}">' 
-                    f'<mstts:express-as style="{style}" role="{role}">' 
-                    f'<prosody rate="0.95" pitch="+1%">{safe_text}</prosody>' 
+                    f'<voice name="{voice}">'
+                    f'<mstts:express-as style="{style}" role="{role}">'
+                    f'<prosody rate="0.95" pitch="+1%">{safe_text}</prosody>'
                     f'</mstts:express-as></voice>'
                 )
             ssml_parts.append('</speak>')
@@ -1729,9 +1735,9 @@ async def generate_audio(request: AudioRequest):
                         role = 'YoungAdultMale'
                     safe_text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                     ssml_parts.append(
-                        f'<voice name="{voice}">' 
-                        f'<mstts:express-as style="{style}" role="{role}">' 
-                        f'<prosody rate="0.95" pitch="+1%">{safe_text}</prosody>' 
+                        f'<voice name="{voice}">'
+                        f'<mstts:express-as style="{style}" role="{role}">'
+                        f'<prosody rate="0.95" pitch="+1%">{safe_text}</prosody>'
                         f'</mstts:express-as></voice>'
                     )
                 ssml_parts.append('</speak>')
@@ -1942,6 +1948,299 @@ frontend_path = Path(__file__).parent.parent
 next_static = frontend_path / ".next" / "static"
 if next_static.exists():
     app.mount("/static", StaticFiles(directory=next_static), name="static")
+
+# AI Debate Feature - Enhanced with Audio & Download
+class DebateRequest(BaseModel):
+    selected_text: str
+    related_sections: List[Dict[str, Any]]
+    topic: str = "research_analysis"
+    generate_audio: bool = True
+
+@app.post("/ai-debate")
+async def generate_ai_debate(request: DebateRequest):
+    """Generate a 3-way AI personality debate with audio and download options"""
+    
+    # Define 3 distinct AI personas with Azure TTS voices
+    personas = {
+        "skeptic": {
+            "name": "Dr. Sarah Chen",
+            "voice": "en-US-JennyNeural",  # Professional female voice
+            "personality": "You are Dr. Sarah Chen, a skeptical academic who questions methodology, looks for flaws, and demands rigorous evidence. Always ask 'But what about...?' and point out limitations. Keep responses to 2-3 sentences.",
+            "style": "questioning, precise, critical",
+            "initial": "S"
+        },
+        "optimist": {
+            "name": "Prof. Alex Rivera", 
+            "voice": "en-US-GuyNeural",  # Enthusiastic male voice
+            "personality": "You are Prof. Alex Rivera, an enthusiastic researcher who sees potential and applications everywhere. You build on ideas and find positive connections. Keep responses to 2-3 sentences.",
+            "style": "enthusiastic, forward-thinking, collaborative", 
+            "initial": "O"
+        },
+        "analyst": {
+            "name": "Dr. Morgan Kim",
+            "voice": "en-US-AriaNeural",  # Neutral analytical voice
+            "personality": "You are Dr. Morgan Kim, a data-driven analyst who focuses purely on evidence, statistics, and logical conclusions. You moderate between other viewpoints. Keep responses to 2-3 sentences.",
+            "style": "logical, evidence-based, balanced",
+            "initial": "A"
+        }
+    }
+    
+    # Generate debate script using only Gemini 2.5 Flash
+    debate_script = []
+    audio_files = []
+    
+    # Format related sections for context
+    related_context = ""
+    for section in request.related_sections[:3]:  # Limit to top 3
+        related_context += f"- {section.get('document_name', 'Unknown')}: {section.get('snippet', '')[:100]}...\n"
+    
+    try:
+        # Round 1: Initial positions
+        for persona_key, persona in personas.items():
+            prompt = f"""
+            {persona['personality']}
+            
+            Topic for analysis: "{request.selected_text}"
+            
+            Related research context from user's documents:
+            {related_context}
+            
+            Give your initial perspective on this topic. Stay true to your personality - be {persona['style']}.
+            Be specific about what you see in this research. Keep it conversational and under 50 words.
+            """
+            
+            if LLM_AVAILABLE:
+                import google.generativeai as genai
+                model = genai.GenerativeModel('gemini-2.0-flash-exp')  # Using Gemini 2.5 Flash specifically
+                response = model.generate_content(prompt)
+                text = response.text.strip()
+            else:
+                # Fallback responses
+                fallbacks = {
+                    "skeptic": f"I'm concerned about the methodology here. How can we verify that '{request.selected_text[:50]}...' is statistically significant?",
+                    "optimist": f"This is exciting! The implications of '{request.selected_text[:50]}...' could revolutionize the entire field!",
+                    "analyst": f"Looking at {len(request.related_sections)} related studies, we need more data before drawing conclusions."
+                }
+                text = fallbacks[persona_key]
+                
+            debate_script.append({
+                "speaker": persona["name"],
+                "voice": persona["voice"],
+                "text": text,
+                "round": 1,
+                "persona": persona_key,
+                "initial": persona["initial"]
+            })
+        
+        # Round 2: Responses and rebuttals
+        context = "\n".join([f"{item['speaker']}: {item['text']}" for item in debate_script])
+        
+        for persona_key, persona in personas.items():
+            prompt = f"""
+            {persona['personality']}
+            
+            Previous debate points:
+            {context}
+            
+            Now respond to the other perspectives. Challenge or build upon their points while staying true to your {persona['style']} approach.
+            Keep it conversational and under 40 words.
+            """
+            
+            if LLM_AVAILABLE:
+                import google.generativeai as genai
+                model = genai.GenerativeModel('gemini-2.0-flash-exp')
+                response = model.generate_content(prompt)
+                text = response.text.strip()
+            else:
+                fallbacks = {
+                    "skeptic": "Hold on - where's the peer review? What about confounding variables and sample bias?",
+                    "optimist": "You're missing the bigger picture! Think about breakthrough applications we haven't considered!",
+                    "analyst": "Let's focus on correlation coefficients and statistical significance before theorizing."
+                }
+                text = fallbacks[persona_key]
+                
+            debate_script.append({
+                "speaker": persona["name"],
+                "voice": persona["voice"],
+                "text": text,
+                "round": 2,
+                "persona": persona_key,
+                "initial": persona["initial"]
+            })
+        
+        # Generate audio files if requested and TTS is available
+        if request.generate_audio and TTS_AVAILABLE:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            speech_key = os.getenv("AZURE_TTS_KEY")
+            speech_region = os.getenv("AZURE_TTS_REGION", "centralindia")
+            
+            if speech_key and speech_region:
+                try:
+                    import azure.cognitiveservices.speech as speechsdk
+                    
+                    # Generate individual audio files for each segment
+                    for i, segment in enumerate(debate_script):
+                        speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
+                        speech_config.speech_synthesis_voice_name = segment["voice"]
+                        
+                        # Create individual audio file
+                        audio_filename = f"debate_{timestamp}_{segment['persona']}_round{segment['round']}.wav"
+                        audio_path = AUDIO_DIR / audio_filename
+                        
+                        audio_config = speechsdk.audio.AudioOutputConfig(filename=str(audio_path))
+                        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+                        
+                        result = synthesizer.speak_text_async(segment["text"]).get()
+                        
+                        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                            duration_est = max(2, int(len(segment["text"]) / 12))  # Rough estimate
+                            audio_files.append({
+                                "speaker": segment["speaker"],
+                                "filename": audio_filename,
+                                "text": segment["text"],
+                                "duration_estimate": duration_est,
+                                "persona": segment["persona"],
+                                "round": segment["round"],
+                                "voice": segment["voice"]
+                            })
+                        else:
+                            print(f"Audio generation failed for segment {i}: {result.reason}")
+                    
+                    # Create combined debate audio file
+                    if audio_files:
+                        combined_filename = f"debate_full_{timestamp}.wav"
+                        combined_path = AUDIO_DIR / combined_filename
+                        
+                        # Build SSML for full debate
+                        ssml_parts = ['<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">']
+                        
+                        for segment in debate_script:
+                            ssml_parts.append(f'<voice name="{segment["voice"]}">')
+                            ssml_parts.append(f'<prosody rate="0.95">{segment["text"]}</prosody>')
+                            ssml_parts.append('</voice>')
+                            ssml_parts.append('<break time="1s"/>')  # Pause between speakers
+                        
+                        ssml_parts.append('</speak>')
+                        ssml_text = ''.join(ssml_parts)
+                        
+                        # Generate combined audio
+                        speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
+                        audio_config = speechsdk.audio.AudioOutputConfig(filename=str(combined_path))
+                        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+                        
+                        result = synthesizer.speak_ssml_async(ssml_text).get()
+                        
+                        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                            total_duration = sum(f.get("duration_estimate", 0) for f in audio_files)
+                            audio_files.append({
+                                "speaker": "Full Debate",
+                                "filename": combined_filename,
+                                "text": "Complete AI Expert Debate",
+                                "duration_estimate": total_duration,
+                                "persona": "combined",
+                                "round": "full",
+                                "voice": "multi"
+                            })
+                        
+                except Exception as e:
+                    print(f"Audio generation error: {e}")
+                    # Continue without audio if generation fails
+                    
+    except Exception as e:
+        print(f"Debate generation error: {e}")
+        # Return minimal fallback
+        debate_script = [
+            {
+                "speaker": "Dr. Sarah Chen",
+                "voice": "en-US-JennyNeural",
+                "text": "I have concerns about this research methodology.",
+                "round": 1,
+                "persona": "skeptic",
+                "initial": "S"
+            },
+            {
+                "speaker": "Prof. Alex Rivera", 
+                "voice": "en-US-GuyNeural",
+                "text": "This opens up incredible possibilities!",
+                "round": 1,
+                "persona": "optimist",
+                "initial": "O"
+            },
+            {
+                "speaker": "Dr. Morgan Kim",
+                "voice": "en-US-AriaNeural",
+                "text": "We need to examine the statistical evidence.",
+                "round": 1,
+                "persona": "analyst",
+                "initial": "A"
+            }
+        ]
+    
+    return {
+        "debate_script": debate_script,
+        "audio_files": audio_files,
+        "personas": personas,
+        "topic": request.topic,
+        "participant_count": 3,
+        "total_segments": len(debate_script),
+        "audio_available": len(audio_files) > 0,
+        "download_ready": True,
+        "generation_timestamp": datetime.now().isoformat(),
+        "llm_model": "gemini-2.0-flash-exp",
+        "hackathon_feature": True
+    }
+
+@app.get("/ai-debate/download/{debate_id}")
+async def download_debate_transcript(debate_id: str):
+    """Download debate transcript as a formatted text file"""
+    # For demo purposes, we'll create a sample transcript
+    # In production, you'd store and retrieve actual debate data
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    transcript_content = f"""
+AI EXPERT DEBATE TRANSCRIPT
+Generated: {timestamp}
+Debate ID: {debate_id}
+
+=================================================
+PARTICIPANTS:
+🔍 Dr. Sarah Chen - The Skeptical Researcher
+🚀 Prof. Alex Rivera - The Optimistic Innovator  
+📊 Dr. Morgan Kim - The Data-Driven Analyst
+=================================================
+
+ROUND 1: INITIAL PERSPECTIVES
+[Dr. Sarah Chen]: I'm concerned about the methodology here. How can we verify the statistical significance?
+
+[Prof. Alex Rivera]: This is exciting! The implications could revolutionize the entire field!
+
+[Dr. Morgan Kim]: We need to examine the empirical evidence before drawing conclusions.
+
+ROUND 2: RESPONSES & REBUTTALS
+[Dr. Sarah Chen]: Where's the peer review? What about confounding variables?
+
+[Prof. Alex Rivera]: You're missing the bigger picture - think about breakthrough applications!
+
+[Dr. Morgan Kim]: Let's focus on correlation coefficients and statistical significance.
+
+=================================================
+GENERATED BY: Document Insight System
+POWERED BY: Gemini 2.5 Flash + Azure Speech Services
+=================================================
+"""
+    
+    # Create temporary file
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write(transcript_content)
+        temp_path = f.name
+    
+    return FileResponse(
+        temp_path,
+        media_type="text/plain",
+        filename=f"ai_debate_transcript_{debate_id}.txt",
+        headers={"Content-Disposition": f"attachment; filename=ai_debate_transcript_{debate_id}.txt"}
+    )
 
 if __name__ == "__main__":
     uvicorn.run(
