@@ -1,3 +1,5 @@
+numpy<2
+# For compatibility with Adobe evaluation scripts and sample scripts (chat_with_llm.py, generate_audio.py)
 # Core FastAPI dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0

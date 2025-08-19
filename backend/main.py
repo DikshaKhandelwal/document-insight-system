@@ -330,11 +330,19 @@ except ImportError:
     print("⚠️ Azure Speech Services not available. Audio generation disabled.")
 
 # FastAPI app
+
 app = FastAPI(
     title="Document Insight System",
     description="Advanced PDF analysis with semantic search and AI insights",
     version="1.0.0"
 )
+
+# Register Gemini endpoint for Docker compatibility
+try:
+    from backend.main import add_gemini_sections_endpoint
+    add_gemini_sections_endpoint(app)
+except Exception as e:
+    print(f"[WARN] Could not register Gemini endpoint: {e}")
 
 # CORS middleware
 app.add_middleware(
@@ -1562,8 +1570,9 @@ async def generate_audio(request: AudioRequest):
             )
         audio_files = []
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        speech_key = os.getenv("AZURE_SPEECH_KEY")
-        speech_region = os.getenv("AZURE_SPEECH_REGION")
+        # Support both AZURE_TTS_KEY/AZURE_TTS_ENDPOINT and AZURE_SPEECH_KEY/AZURE_SPEECH_REGION
+        speech_key = os.getenv("AZURE_TTS_KEY") or os.getenv("AZURE_SPEECH_KEY")
+        speech_region = os.getenv("AZURE_TTS_ENDPOINT") or os.getenv("AZURE_SPEECH_REGION")
         total_duration = 0
         if not (speech_key and speech_region):
             print("Azure Speech credentials not found. Audio files not generated.")
@@ -1599,9 +1608,9 @@ async def generate_audio(request: AudioRequest):
                         role = 'YoungAdultMale'
                     safe_text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                     ssml_parts.append(
-                        f'<voice name="{voice}">'
-                        f'<mstts:express-as style="{style}" role="{role}">'
-                        f'<prosody rate="0.95" pitch="+1%">{safe_text}</prosody>'
+                        f'<voice name="{voice}">' 
+                        f'<mstts:express-as style="{style}" role="{role}">' 
+                        f'<prosody rate="0.95" pitch="+1%">{safe_text}</prosody>' 
                         f'</mstts:express-as></voice>'
                     )
                 ssml_parts.append('</speak>')
