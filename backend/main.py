@@ -367,10 +367,10 @@ app = FastAPI(
 )
 
 # Serve built frontend static files at root
-from fastapi.staticfiles import StaticFiles
-import os
-frontend_build_path = os.path.join(os.path.dirname(__file__), "..", "build")
-app.mount("/", StaticFiles(directory=frontend_build_path, html=True), name="static")
+#from fastapi.staticfiles import StaticFiles
+#import os
+#frontend_build_path = os.path.join(os.path.dirname(__file__), "..", "build")
+#app.mount("/", StaticFiles(directory=frontend_build_path, html=True), name="static")
 
 # Register Gemini endpoint for Docker compatibility
 try:
@@ -1068,10 +1068,8 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
                 emb_model = load_minilm_model()
                 if emb_model is not None:
                     q_emb = emb_model.encode([request.selected_text], convert_to_numpy=True)
-                    # strip intro/outro to focus embeddings on core content
                     cleaned_texts = [strip_intro_outro(t) for t in candidate_texts]
                     sec_embs = emb_model.encode(cleaned_texts, convert_to_numpy=True)
-                    # normalize
                     sec_norms = np.linalg.norm(sec_embs, axis=1, keepdims=True)
                     sec_norms[sec_norms == 0] = 1.0
                     sec_embs = sec_embs / sec_norms
@@ -1079,7 +1077,6 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
                     if q_norm == 0:
                         q_norm = 1.0
                     q_emb = q_emb / q_norm
-                    # cosine similarities
                     try:
                         minilm_sims = cosine_similarity(q_emb, sec_embs)[0].tolist()
                     except Exception:
@@ -1087,8 +1084,52 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
         except Exception as e:
             print(f"⚠️ Error computing MiniLM sims for FAISS candidates: {e}")
 
-        # Iterate in original ids order and compute combined score using MiniLM (heavy) + FAISS + title boost
+        # --- Normalization for scoring ---
+        # Gather all faiss_sim and minilm_sim values for normalization
+        faiss_sims = []
+        minilm_sims_list = []
         ml_index = 0
+        for idx, raw_id in enumerate(ids[0]):
+            if raw_id == -1:
+                continue
+            # FAISS similarity at this position
+            faiss_sim = float(distances[0][idx])
+            faiss_sims.append(faiss_sim)
+            # MiniLM similarity for this candidate (if computed)
+            minilm_sim = 0.0
+            try:
+                if minilm_sims is not None and ml_index < len(minilm_sims):
+                    minilm_sim = float(minilm_sims[ml_index])
+            except Exception:
+                minilm_sim = 0.0
+            minilm_sims_list.append(minilm_sim)
+            ml_index += 1
+
+        # Min-max normalization
+        def minmax_norm(vals):
+            if not vals or len(vals) == 0:
+                return [0.0 for _ in vals]
+            vmin = min(vals)
+            vmax = max(vals)
+            if vmax == vmin:
+                return [0.5 for _ in vals]  # all same, neutral
+            return [(v - vmin) / (vmax - vmin) for v in vals]
+
+        faiss_sims_norm = minmax_norm(faiss_sims)
+        minilm_sims_norm = minmax_norm(minilm_sims_list)
+
+        # Dynamic weight tuning
+        query_word_count = len(re.findall(r'\w+', request.selected_text or ""))
+        if query_word_count < 5:
+            minilm_weight = 0.35
+            faiss_weight = 0.55
+        else:
+            minilm_weight = 0.55
+            faiss_weight = 0.35
+
+        # Iterate in original ids order and compute combined score using normalized values
+        ml_index = 0
+        norm_index = 0
         for idx, raw_id in enumerate(ids[0]):
             if raw_id == -1:
                 continue
@@ -1096,9 +1137,6 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
             row = row_map.get(sid)
             if not row:
                 continue
-
-            # FAISS similarity at this position
-            faiss_sim = float(distances[0][idx])
 
             # Document filename
             cursor.execute("SELECT filename FROM documents WHERE id = ?", (row[4],))
@@ -1109,43 +1147,35 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
             snippet = build_snippet(full_text, row[1], filename=doc_name, page_number=row[3])
             highlight_candidate = (full_text.strip() if full_text else row[1] or request.selected_text)
 
-            # MiniLM similarity for this candidate (if computed)
-            minilm_sim = 0.0
-            try:
-                if minilm_sims is not None and ml_index < len(minilm_sims):
-                    minilm_sim = float(minilm_sims[ml_index])
-            except Exception:
-                minilm_sim = 0.0
+            # Normalized similarities
+            faiss_sim_norm = faiss_sims_norm[norm_index] if norm_index < len(faiss_sims_norm) else 0.0
+            minilm_sim_norm = minilm_sims_norm[norm_index] if norm_index < len(minilm_sims_norm) else 0.0
 
-            # Title boost/penalty: boost relevant terms, penalize intro/conclusion headings
+            # Title boost/penalty: boost relevant terms, penalize intro/conclusion/acknowledgements headings
             title = (row[1] or '').lower()
             title_adjustment = 0.0
             try:
                 q_words = set([w.strip() for w in re.split(r"\W+", request.selected_text.lower()) if w.strip()])
                 title_words = set([w.strip() for w in re.split(r"\W+", title) if w.strip()])
-
-                # Check for intro/conclusion headings and penalize them
-                intro_conclusion_terms = ['introduction', 'conclusion', 'conclusions', 'abstract', 'summary']
-                if any(term in title for term in intro_conclusion_terms):
-                    title_adjustment = -0.15  # Penalize intro/conclusion sections
+                # Penalize intro/conclusion/acknowledgements/thanks/summary/abstract
+                penalize_terms = [
+                    'introduction', 'conclusion', 'conclusions', 'abstract', 'summary',
+                    'acknowledgement', 'acknowledgements', 'acknowledgment', 'acknowledgments',
+                    'thanks', 'thank you'
+                ]
+                if any(term in title for term in penalize_terms):
+                    title_adjustment = -0.25  # Stronger penalty for boilerplate sections
                 elif q_words and len(q_words & title_words) > 0:
                     title_adjustment = 0.10  # Boost relevant terms
             except Exception:
                 title_adjustment = 0.0
 
-            # Normalize faiss sim
-            try:
-                faiss_sim_norm = max(0.0, min(1.0, float(faiss_sim)))
-            except Exception:
-                faiss_sim_norm = 0.0
+            # Combine signals with dynamic weights and normalized values
+            combined_score = (minilm_weight * minilm_sim_norm) + (faiss_weight * faiss_sim_norm) + title_adjustment
 
-            # Combine signals with higher weight for MiniLM
-            combined_score = (0.55 * minilm_sim) + (0.35 * faiss_sim_norm) + title_adjustment
-
-            # Apply threshold
             threshold = float(request.similarity_threshold or 0.0)
             if combined_score < threshold:
-                ml_index += 1
+                norm_index += 1
                 continue
 
             results.append(SearchResult(
@@ -1156,7 +1186,7 @@ async def vector_search(request: SearchRequest, cursor, search_id: int, start_ti
                 similarity_score=combined_score,
                 highlight_text=highlight_candidate
             ))
-            ml_index += 1
+            norm_index += 1
 
         # Sort and return top-k
         results.sort(key=lambda x: x.similarity_score, reverse=True)
@@ -1279,22 +1309,39 @@ async def minilm_semantic_search(request: SearchRequest, all_sections):
         # Calculate cosine similarities
         similarities = cosine_similarity(query_embedding, section_embeddings)[0]
 
+        # --- Dynamic thresholding ---
+        # Use a base threshold of 0.40 (safer for academic data)
+        base_threshold = 0.40
+        # Optionally, include all results within 0.05 of the best score
+        if len(similarities) > 0:
+            best_score = max(similarities)
+            dynamic_threshold = max(base_threshold, best_score - 0.05)
+        else:
+            dynamic_threshold = base_threshold
+
         # Create results with similarity scores
         for i, (section, similarity) in enumerate(zip(valid_sections, similarities)):
-            # Set a reasonable threshold for semantic similarity
-            if similarity > 0.15:  # MiniLM threshold
+            # Use dynamic threshold
+            if similarity >= dynamic_threshold:
                 full_text = section[2] or ''
                 snippet = build_snippet(full_text, section[1], filename=section[4], page_number=section[3])
-
-                # Use actual section content for better highlighting
                 highlight_candidate = (full_text.strip() if full_text else section[1] or request.selected_text)
-
+                # Penalize intro/conclusion/acknowledgements in section title
+                section_title = (section[1] or '').lower()
+                penalize_terms = [
+                    'introduction', 'conclusion', 'conclusions', 'abstract', 'summary',
+                    'acknowledgement', 'acknowledgements', 'acknowledgment', 'acknowledgments',
+                    'thanks', 'thank you'
+                ]
+                penalty = -0.25 if any(term in section_title for term in penalize_terms) else 0.0
+                boost = 0.10 if set(re.split(r"\W+", request.selected_text.lower())) & set(re.split(r"\W+", section_title)) else 0.0
+                adjusted_score = float(similarity) + penalty + boost
                 results.append(SearchResult(
                     document_name=section[4],
                     section_title=section[1] or "Untitled Section",
                     snippet=snippet,
                     page_number=section[3] or 1,
-                    similarity_score=float(similarity),
+                    similarity_score=adjusted_score,
                     highlight_text=highlight_candidate
                 ))
 
@@ -1578,12 +1625,7 @@ async def generate_audio(request: AudioRequest):
 
             FORMAT: "Speaker A: [text]" and "Speaker B: [text]"
 
-            IMPORTANT:
-            - Output ONLY lines starting with 'Speaker A:' or 'Speaker B:' (or 'Host A:'/'Expert B:').
-            - No other text, no introductions, no summaries, no formatting, no markdown.
-            - At least 6 exchanges, alternating speakers.
-            - Do not include any text except speaker lines.
-            - No extra narrative, no headings, no closing remarks outside the dialogue.
+
             """
             import google.generativeai as genai
             gemini_model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
