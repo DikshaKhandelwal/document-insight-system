@@ -542,9 +542,9 @@ export default function ReaderPage() {
   const exampleResults = searchResults.filter(r => r.snippet.toLowerCase().includes('example') || r.snippet.toLowerCase().includes('case study') || r.snippet.toLowerCase().includes('instance'))
 
   return (
-    <div className="h-screen flex flex-col lg:flex-row bg-gradient-to-br from-slate-50 to-white overflow-hidden">
+  <div className="h-screen flex flex-col lg:flex-row bg-gradient-to-br from-white via-slate-50 to-orange-50 overflow-hidden">
       {/* Left Sidebar - Document Library & AI Chat */}
-      <div className={`h-screen flex flex-col bg-white border-r border-slate-200 order-3 lg:order-1 overflow-hidden relative transition-all duration-300 ease-in-out ${
+      <div className={`h-screen flex flex-col bg-white/90 border-r border-orange-200 order-3 lg:order-1 overflow-hidden relative transition-all duration-300 ease-in-out ${
         isLeftPanelCollapsed 
           ? 'w-0 lg:w-12' 
           : 'w-full lg:w-80 lg:min-w-[320px]'
@@ -571,7 +571,7 @@ export default function ReaderPage() {
         {!isLeftPanelCollapsed && (
           <>
             {/* Document Library */}
-            <div className="h-1/2 border-b border-slate-200 flex flex-col bg-slate-50">
+            <div className="h-1/2 border-b border-orange-100 flex flex-col bg-orange-50/30">
           <div className="p-4 border-b border-slate-200 flex-shrink-0">
             <div className="flex items-center gap-2 mb-3">
               <span className="text-sm font-medium text-slate-900">Document Library</span>
@@ -612,17 +612,17 @@ export default function ReaderPage() {
             <Button
               onClick={() => fileInputRef.current?.click()}
               variant="outline"
-              className="w-full text-xs h-7"
+              className="w-full text-xs h-7 border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100"
               disabled={isUploading}
             >
               {isUploading ? (
                 <>
-                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                  <Loader2 className="w-3 h-3 mr-1 animate-spin text-orange-500" />
                   Uploading...
                 </>
               ) : (
                 <>
-                  <Upload className="w-3 h-3 mr-1" />
+                  <Upload className="w-3 h-3 mr-1 text-orange-500" />
                   {documents.length === 0 ? 'Upload PDFs' : 'Add More'}
                 </>
               )}
@@ -734,7 +734,7 @@ export default function ReaderPage() {
         </div>
 
         {/* AI Q&A Chatbot */}
-        <div className="h-1/2 flex flex-col bg-slate-50">
+  <div className="h-1/2 flex flex-col bg-orange-50/20">
           <div className="p-4 border-b border-slate-200">
             <h3 className="text-sm font-semibold text-slate-900">Ask AI about this document</h3>
           </div>
@@ -747,9 +747,9 @@ export default function ReaderPage() {
       </div>
 
       {/* Center Panel - PDF Viewer */}
-      <div className="flex-1 flex flex-col border-r border-slate-200 h-full order-1 lg:order-2">
+  <div className="flex-1 flex flex-col border-r border-orange-200 h-full order-1 lg:order-2 bg-white/80">
         {/* Header */}
-        <div className="border-b border-slate-200 p-4 bg-white">
+  <div className="border-b border-orange-200 p-4 bg-white/90">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <Link href="/">
@@ -815,27 +815,27 @@ export default function ReaderPage() {
       </div>
 
       {/* Right Panel - Analysis Tabs */}
-      <div className="w-full lg:w-96 lg:max-w-lg lg:min-w-[360px] h-full flex flex-col bg-white border-l border-slate-200 order-2 lg:order-3 overflow-hidden">
+  <div className="w-full lg:w-96 lg:max-w-lg lg:min-w-[360px] h-full flex flex-col bg-white/90 border-l border-orange-200 order-2 lg:order-3 overflow-hidden">
         {/* Top Controls */}
-        <div className="border-b border-slate-200 p-4">
+  <div className="border-b border-orange-200 p-4 bg-orange-50/30">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-serif text-lg font-semibold text-slate-900">Document Analysis</h2>
-            <Badge variant={selectedText ? "default" : "secondary"} className="text-xs">
+            <h2 className="font-serif text-lg font-semibold text-orange-900">Document Analysis</h2>
+            <Badge variant={selectedText ? "default" : "secondary"} className="text-xs bg-orange-100 text-orange-700 border-orange-300">
               {selectedText ? "Text Selected" : "No Selection"}
             </Badge>
           </div>
           
           {selectedText && (
             <div className="space-y-3">
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+              <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
                 <div className="flex items-center gap-2 mb-2">
-                  <Target className="w-4 h-4 text-blue-600" />
-                  <span className="text-sm font-medium text-blue-900">Selected Text</span>
-                  <Badge variant="secondary" className="text-xs">
+                  <Target className="w-4 h-4 text-orange-600" />
+                  <span className="text-sm font-medium text-orange-900">Selected Text</span>
+                  <Badge variant="secondary" className="text-xs bg-orange-100 text-orange-700 border-orange-300">
                     {selectedText.length} chars
                   </Badge>
                 </div>
-                <p className="text-sm text-blue-800 italic">
+                <p className="text-sm text-orange-800 italic">
                   "{selectedText.substring(0, 100)}{selectedText.length > 100 ? '...' : ''}"
                 </p>
               </div>
@@ -883,7 +883,7 @@ export default function ReaderPage() {
 
               {/* Audio Player */}
               {audioSegments.length > 0 && (
-                <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
+                <div className="bg-orange-100 border border-orange-300 rounded-lg p-3">
                   <div className="flex items-center gap-2 mb-2">
                     <Volume1 className="w-4 h-4 text-orange-600" />
                     <span className="text-sm font-medium text-orange-900">Podcast Ready</span>
@@ -899,7 +899,7 @@ export default function ReaderPage() {
         <div className="flex-1 overflow-hidden">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
             <div className="border-b border-slate-200 mx-2 mt-2">
-              <TabsList className="grid w-full grid-cols-5 h-8 bg-slate-50">
+              <TabsList className="grid w-full grid-cols-5 h-8 bg-orange-50/40">
                 <TabsTrigger value="related" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Related</TabsTrigger>
                 <TabsTrigger value="overlapping" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Overlap</TabsTrigger>
                 <TabsTrigger value="contradicting" className="text-[10px] px-0.5 h-7 data-[state=active]:bg-white">Contrast</TabsTrigger>
@@ -931,7 +931,7 @@ export default function ReaderPage() {
                       {relatedResults.map((result, index) => (
                         <Card 
                           key={`related-${result.id}-${index}`} 
-                          className="cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-green-500 hover:border-l-green-600"
+                          className="cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-orange-400 hover:border-l-orange-500 bg-orange-50/30"
                           onClick={() => handleJumpToHighlight(result)}
                           onAuxClick={(e) => {
                             // Middle click opens in new tab
@@ -1021,7 +1021,7 @@ export default function ReaderPage() {
                       {overlappingResults.map((result, index) => (
                         <Card 
                           key={`overlap-${result.id}-${index}`} 
-                          className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-blue-500"
+                          className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-orange-300 bg-orange-50/20"
                           onClick={() => handleJumpToHighlight(result)}
                         >
                           <CardContent className="p-2">
@@ -1088,7 +1088,7 @@ export default function ReaderPage() {
                       {contradictingResults.map((result, index) => (
                         <Card 
                           key={`contrast-${result.id}-${index}`} 
-                          className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-red-500"
+                          className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-orange-500 bg-orange-50/20"
                           onClick={() => handleJumpToHighlight(result)}
                         >
                           <CardContent className="p-2">
@@ -1155,7 +1155,7 @@ export default function ReaderPage() {
                       {exampleResults.map((result, index) => (
                         <Card 
                           key={`example-${result.id}-${index}`} 
-                          className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-purple-500"
+                          className="cursor-pointer hover:shadow-md transition-all duration-200 hover:scale-[1.02] border-l-4 border-l-orange-400 bg-orange-50/20"
                           onClick={() => handleJumpToHighlight(result)}
                         >
                           <CardContent className="p-2">
