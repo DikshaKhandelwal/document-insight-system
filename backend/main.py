@@ -41,6 +41,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from fastapi import Request
 
+
+
 # Base directory (directory containing this file). Use this to build absolute paths
 # so the server behaves the same regardless of current working directory.
 BASE_DIR = Path(__file__).resolve().parent
@@ -357,11 +359,16 @@ except ImportError:
 
 # FastAPI app
 
+
 app = FastAPI(
     title="Document Insight System",
     description="Advanced PDF analysis with semantic search and AI insights",
     version="1.0.0"
 )
+
+# Serve built frontend static files at root
+from fastapi.staticfiles import StaticFiles
+app.mount("/", StaticFiles(directory="build", html=True), name="static")
 
 # Register Gemini endpoint for Docker compatibility
 try:
