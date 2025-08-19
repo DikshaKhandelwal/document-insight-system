@@ -33,12 +33,16 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 # Copy frontend files
 COPY package.json ./
 COPY pnpm-lock.yaml ./
+COPY tsconfig.json ./
 COPY next.config.mjs ./
+COPY next-env.d.ts ./
 COPY postcss.config.mjs ./
 COPY tailwind.config.js ./
 COPY app/ ./app/
+COPY components/ ./components/
 COPY public/ ./public/
 COPY styles/ ./styles/
+
 
 # Install frontend dependencies and build
 RUN pnpm install --frozen-lockfile && pnpm build

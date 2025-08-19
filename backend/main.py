@@ -1,3 +1,17 @@
+# --- Backend Configuration (moved from .env) ---
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+MAX_FILE_SIZE = 10485760  # 10MB in bytes
+UPLOAD_DIR = "uploads/"
+ALLOWED_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+HOST = "0.0.0.0"
+PORT = 8000
+DEBUG = True
+FAISS_INDEX_PATH = "./embeddings/"
+SIMILARITY_THRESHOLD = 0.7
+AUDIO_FORMAT = "wav"
+SPEECH_RATE = 1.0
+SPEECH_PITCH = 0.0
+DATABASE_URL= "sqlite:///./documents.db"
 #!/usr/bin/env python3
 """
 Document Insight System - Fastry:
@@ -51,6 +65,9 @@ import aiofiles
 sys.path.append(str(Path(__file__).parent.parent / "lib" / "pdf-extractors"))
 
 try:
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent / "lib" / "pdf-extractors"))
     from pdf_outline_extractor import SimplePDFExtractor
 except ImportError as e:
     print(f"Error importing PDF extractors: {e}")
@@ -315,9 +332,18 @@ def strip_intro_outro(text: str, remove_sentences: int = 1) -> str:
     except Exception:
         return text
 
+
+# Gemini LLM setup
 try:
     import google.generativeai as genai
-    LLM_AVAILABLE = True
+    import os
+    api_key = os.getenv("GEMINI_API_KEY")
+    if api_key:
+        genai.configure(api_key=api_key)
+        LLM_AVAILABLE = True
+    else:
+        LLM_AVAILABLE = False
+        print("⚠️ GEMINI_API_KEY not set. Insights generation disabled.")
 except ImportError:
     LLM_AVAILABLE = False
     print("⚠️ Google Gemini not available. Insights generation disabled.")
@@ -1543,12 +1569,50 @@ async def generate_audio(request: AudioRequest):
 
             FORMAT: "Speaker A: [text]" and "Speaker B: [text]"
 
-            Make it sound like two real people having an intelligent, enthusiastic discussion about the research!
+            IMPORTANT:
+            - Output ONLY lines starting with 'Speaker A:' or 'Speaker B:' (or 'Host A:'/'Expert B:').
+            - No other text, no introductions, no summaries, no formatting, no markdown.
+            - At least 6 exchanges, alternating speakers.
+            - Do not include any text except speaker lines.
+            - No extra narrative, no headings, no closing remarks outside the dialogue.
             """
             import google.generativeai as genai
-            model_gemini = genai.GenerativeModel('gemini-1.5-flash')
+            gemini_model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+            model_gemini = genai.GenerativeModel(gemini_model_name)
             response = model_gemini.generate_content(script_prompt)
-            script = response.text.strip()
+            raw_script = response.text.strip()
+            # Strictly filter only lines with speaker tags for SSML
+            lines = raw_script.split('\n')
+            segments = []
+            for line in lines:
+                l = line.strip()
+                if l.startswith('Speaker A:') or l.startswith('Host A:'):
+                    segments.append(('A', l.split(':', 1)[1].strip()))
+                elif l.startswith('Speaker B:') or l.startswith('Expert B:'):
+                    segments.append(('B', l.split(':', 1)[1].strip()))
+            # Build SSML exactly as in Gemini 1.5 output
+            ssml_parts = [
+                '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US">'
+            ]
+            for speaker, text in segments:
+                if speaker == 'A':
+                    voice = 'en-US-AvaMultilingualNeural'
+                    style = 'cheerful'
+                    role = 'YoungAdultFemale'
+                else:
+                    voice = 'en-US-AndrewMultilingualNeural'
+                    style = 'calm'
+                    role = 'YoungAdultMale'
+                safe_text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                ssml_parts.append(
+                    f'<voice name="{voice}">' 
+                    f'<mstts:express-as style="{style}" role="{role}">' 
+                    f'<prosody rate="0.95" pitch="+1%">{safe_text}</prosody>' 
+                    f'</mstts:express-as></voice>'
+                )
+            ssml_parts.append('</speak>')
+            ssml_text = ''.join(ssml_parts)
+            script = '\n'.join([f"Speaker A: {t}" if s == 'A' else f"Speaker B: {t}" for s, t in segments])
         else:
             insight_text = (
                 f"Looking at your insights, we see {', '.join([k for k in request.insights.keys() if k != 'status'])} themes emerging."
@@ -1570,9 +1634,15 @@ async def generate_audio(request: AudioRequest):
             )
         audio_files = []
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Support both AZURE_TTS_KEY/AZURE_TTS_ENDPOINT and AZURE_SPEECH_KEY/AZURE_SPEECH_REGION
-        speech_key = os.getenv("AZURE_TTS_KEY") or os.getenv("AZURE_SPEECH_KEY")
-        speech_region = os.getenv("AZURE_TTS_ENDPOINT") or os.getenv("AZURE_SPEECH_REGION")
+        speech_key = os.getenv("AZURE_TTS_KEY") #or os.getenv("AZURE_SPEECH_KEY")
+        endpoint = os.getenv("AZURE_TTS_ENDPOINT")
+        import re
+        speech_region = None
+        if endpoint:
+            match = re.search(r'https://([^.]+)\.tts\.speech\.microsoft\.com', endpoint)
+            if match:
+                speech_region = match.group(1)
+        print(speech_key, speech_region)
         total_duration = 0
         if not (speech_key and speech_region):
             print("Azure Speech credentials not found. Audio files not generated.")
@@ -1661,6 +1731,7 @@ async def generate_audio(request: AudioRequest):
     #         "error": str(e),
     #         "fallback_message": "Audio generation encountered an error. Please try again."
     #     }
+
 
 @app.get("/audio/{filename}")
 async def get_audio_file(filename: str):
@@ -1814,22 +1885,12 @@ async def reload_faiss_index():
         return {"ok": False, "error": str(e)}
 
 # Serve the React frontend (if built)
-frontend_path = Path(__file__).parent.parent / "build"
-if frontend_path.exists():
-    app.mount("/static", StaticFiles(directory=frontend_path / "static"), name="static")
 
-    @app.get("/{path:path}")
-    async def serve_frontend(path: str):
-        """Serve React frontend for any non-API route."""
-        if path.startswith("api/"):
-            raise HTTPException(status_code=404)
-
-        file_path = frontend_path / path
-        if file_path.exists() and file_path.is_file():
-            return FileResponse(file_path)
-
-        # Fallback to index.html for React routing
-        return FileResponse(frontend_path / "index.html")
+# Mount Next.js static assets from .next/static
+frontend_path = Path(__file__).parent.parent
+next_static = frontend_path / ".next" / "static"
+if next_static.exists():
+    app.mount("/static", StaticFiles(directory=next_static), name="static")
 
 if __name__ == "__main__":
     uvicorn.run(
