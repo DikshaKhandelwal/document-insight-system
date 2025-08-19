@@ -368,7 +368,9 @@ app = FastAPI(
 
 # Serve built frontend static files at root
 from fastapi.staticfiles import StaticFiles
-app.mount("/", StaticFiles(directory="build", html=True), name="static")
+import os
+frontend_build_path = os.path.join(os.path.dirname(__file__), "..", "build")
+app.mount("/", StaticFiles(directory=frontend_build_path, html=True), name="static")
 
 # Register Gemini endpoint for Docker compatibility
 try:
