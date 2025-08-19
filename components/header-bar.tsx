@@ -8,7 +8,7 @@ export default function HeaderBar() {
         <div className="w-8 h-8 rounded-lg adobe-gradient flex items-center justify-center">
           <FileText className="w-5 h-5 text-white" />
         </div>
-        <h1 className="font-serif text-xl font-semibold text-slate-800">Document Insight</h1>
+    <h1 className="font-serif text-xl font-semibold text-slate-800">DocuVerse</h1>
       </div>
 
       <div className="flex items-center gap-2">
