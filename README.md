@@ -6,6 +6,8 @@ An AI-powered document analysis platform that transforms your research documents
 ![Audio Generation](https://img.shields.io/badge/Audio-TTS%20Enabled-blue?style=for-the-badge)
 ![Vector Search](https://img.shields.io/badge/Search-FAISS%20Powered-green?style=for-the-badge)
 
+**Adobe Embed Api Key = c86390c34abf4eb99411b76d434d55bf**
+
 ## ✨ Features
 
 ### � **Intelligent Document Analysis**
