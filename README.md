@@ -359,6 +359,6 @@ For support, email support@example.com or create an issue in this repository.
 
 ---
 
-**Built with ❤️ for researchers, analysts, and knowledge workers**
+**Built with ❤️ by Smart Builders for researchers, analysts, and knowledge workers**
 
 *Transform your documents into intelligent insights with AI-powered analysis and engaging expert debates.*
