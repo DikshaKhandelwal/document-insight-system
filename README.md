@@ -7,6 +7,7 @@ An AI-powered document analysis platform that transforms your research documents
 ![Vector Search](https://img.shields.io/badge/Search-FAISS%20Powered-green?style=for-the-badge)
 
 **Adobe Embed Api Key = c86390c34abf4eb99411b76d434d55bf**
+**Video Link : https://youtu.be/XApxxXHPlXY**
 
 ## ✨ Features
 
