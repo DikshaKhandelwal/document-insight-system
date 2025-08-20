@@ -2242,6 +2242,12 @@ POWERED BY: Gemini 2.5 Flash + Azure Speech Services
         headers={"Content-Disposition": f"attachment; filename=ai_debate_transcript_{debate_id}.txt"}
     )
 
+# Mount Next.js static assets from .next/static
+frontend_path = Path(_file_).parent.parent
+next_static = frontend_path / ".next" / "static"
+if next_static.exists():
+    app.mount("/static", StaticFiles(directory=next_static), name="static")
+    
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
