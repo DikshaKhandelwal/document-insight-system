@@ -28,13 +28,14 @@ WORKDIR /app
 
 # Install system deps (only what’s needed)
 RUN apt-get update && apt-get install -y \
- curl nginx nodejs \
- && rm -rf /var/lib/apt/lists/*
+    curl nginx nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+RUN npm install -g pm2
 
 # Copy pm2 from frontend-builder stage
-COPY --from=frontend-builder /usr/local/lib/node_modules/pm2 /usr/local/lib/node_modules/pm2
-COPY --from=frontend-builder /usr/local/bin/pm2 /usr/local/bin/pm2
-COPY --from=frontend-builder /usr/local/bin/pm2-runtime /usr/local/bin/pm2-runtime
+# COPY --from=frontend-builder /usr/local/lib/node_modules/pm2 /usr/local/lib/node_modules/pm2
+# COPY --from=frontend-builder /usr/local/bin/pm2 /usr/local/bin/pm2
+# COPY --from=frontend-builder /usr/local/bin/pm2-runtime /usr/local/bin/pm2-runtime
 
 # -----------------------------
 # Python deps
