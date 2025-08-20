@@ -1,0 +1,19 @@
+{
+  "apps": [
+    {
+      "name": "backend",
+      "script": "uvicorn",
+      "args": "backend.main:app --host 0.0.0.0 --port 8081"
+    },
+    {
+      "name": "frontend",
+      "script": "node",
+      "args": "node_modules/next/dist/bin/next start -p 3000"
+    },
+    {
+      "name": "nginx",
+      "script": "nginx",
+      "args": "-c /app/nginx.conf"
+    }
+  ]
+}

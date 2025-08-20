@@ -1,60 +1,67 @@
-# Use an official Python runtime as a parent image
-FROM python:3.11-slim
+# -----------------------------
+# Stage 1 - Build Next.js App
+# -----------------------------
+FROM node:20-slim AS frontend-builder
 
-# Set environment variables for Python
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
-
-# Set workdir to /app
 WORKDIR /app
 
-# Copy backend code
-COPY backend/ ./backend/
+# Install deps separately for caching
+COPY package.json pnpm-lock.yaml tsconfig.json next.config.mjs next-env.d.ts postcss.config.mjs tailwind.config.js ./
+RUN npm config set registry https://registry.npmmirror.com
+RUN corepack enable && pnpm install --frozen-lockfile
+RUN npm install -g pm2
 
-# Copy lib (for PDF extractors)
-COPY lib/ ./lib/
-
-# Copy requirements
-COPY backend/requirements.txt ./backend/requirements.txt
-
-
-# --- Install system dependencies for PyMuPDF and other libs ---
-RUN apt-get update && \
- apt-get install -y ca-certificates build-essential libglib2.0-0 libsm6 libxext6 libxrender-dev curl && \
- pip install --upgrade pip && \
- pip install 'numpy<2' && \
- pip install -r backend/requirements.txt
-
-# --- Install Node.js, pnpm, and build the Next.js frontend ---
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
- apt-get install -y nodejs && \
- npm install -g pnpm
-
-# Copy frontend files
-COPY package.json ./
-COPY pnpm-lock.yaml ./
-COPY tsconfig.json ./
-COPY next.config.mjs ./
-COPY next-env.d.ts ./
-COPY postcss.config.mjs ./
-COPY tailwind.config.js ./
+# Copy rest and build
 COPY app/ ./app/
 COPY components/ ./components/
 COPY public/ ./public/
 COPY styles/ ./styles/
+COPY lib/ ./lib/
+RUN npm run build
+
+# -----------------------------
+# Stage 2 - Final Runtime Image
+# -----------------------------
+FROM python:3.11-slim AS runtime
+
+WORKDIR /app
+
+# Install system deps (only what’s needed)
+RUN apt-get update && apt-get install -y \
+ curl nginx nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy pm2 from frontend-builder stage
+COPY --from=frontend-builder /usr/local/lib/node_modules/pm2 /usr/local/lib/node_modules/pm2
+COPY --from=frontend-builder /usr/local/bin/pm2 /usr/local/bin/pm2
+COPY --from=frontend-builder /usr/local/bin/pm2-runtime /usr/local/bin/pm2-runtime
+
+# -----------------------------
+# Python deps
+# -----------------------------
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+
+# -----------------------------
+# Copy backend + frontend
+# -----------------------------
+COPY backend /app/backend
+COPY --from=frontend-builder /app/.next /app/.next
+COPY --from=frontend-builder /app/node_modules /app/node_modules
+COPY --from=frontend-builder /app/public /app/public
+COPY --from=frontend-builder /app/package.json /app/package.json
 
 
-# Install frontend dependencies and build
-RUN pnpm install --frozen-lockfile && pnpm build
+# -----------------------------
+# Nginx config
+# -----------------------------
+COPY nginx.conf /etc/nginx/nginx.conf
 
-# Copy the built frontend static files to /app/build for backend serving
-RUN mkdir -p /app/build && cp -r .next /app/build/ && cp -r public /app/build/
+# -----------------------------
+# PM2 config
+# -----------------------------
+COPY pm2.json /app/pm2.json
 
-# Expose port (FastAPI default is 8000, but map to 8080 in docker run)
-EXPOSE 8000
+EXPOSE 8080
 
-# Set environment for FastAPI to find lib extractors
-ENV PYTHONPATH="/app/lib/pdf-extractors:/app/backend:/app/lib"
-
-# Entrypoint: run FastAPI app
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["pm2-runtime", "start", "pm2.json"]
